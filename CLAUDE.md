@@ -10,7 +10,7 @@ PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect / Azure Multicl
 - **`az_count = 1`** en el módulo `aws-vpc` (default es 3) - el NAT Gateway regional se factura por AZ activa, y este PoC no necesita alta disponibilidad, solo probar que la conectividad funciona. Mismo criterio de costo que ya aplica en `aws-vpc`/`azure-virtual-network` (nada con costo recurrente prendido por defecto si no hace falta).
 - **Sin bastion, sin SSH/RDP expuesto** - mismo criterio ya decidido en el trabajo de EKS/AKS (un bastion solo mueve dónde tipeás los comandos, no reduce pasos). Acceso a las 2 instancias de prueba vía SSM (AWS) y Run Command (Azure) - ninguna requiere un puerto de management abierto en el Security Group/NSG, solo el tráfico de prueba (ICMP + 8080) desde el CIDR de la otra nube.
 - **VPN Gateway en vez de Transit Gateway** del lado AWS para el DX Gateway association - este PoC es una sola VPC, pagar por un TGW no se justifica solo para este test.
-- **ExpressRoute Gateway SKU `Standard`** (la más barata que soporta `type = "ExpressRoute"`) - no se confirmó el precio exacto por hora, queda pendiente antes de aplicar. Es el recurso más caro y más lento (30-60 min de provisioning) de todo el PoC.
+- **ExpressRoute Gateway SKU `Standard`** (la más barata que soporta `type = "ExpressRoute"`) - $0.19/hora confirmado (ver más abajo). Es el recurso más caro y más lento (30-60 min de provisioning) de todo el PoC.
 
 ## Gotcha: `terraform`/`gcloud` snap binarios no responden en este sandbox
 
@@ -18,7 +18,6 @@ En la sesión donde se escribió este repo, tanto `terraform version` como `gclo
 
 ## Pendiente
 
-- Confirmar precio exacto del ExpressRoute Gateway SKU `Standard` en `eastus` antes de aplicar.
 - Encontrar el comando exacto de AWS CLI / `az` para crear y redimir la activation key del Interconnect (muy nuevo, no confirmado en esta sesión - ver README).
 - Decidir si esto termina viviendo solo como PoC descartable o si se documenta como arquitectura de referencia (como pasó con Container Apps y AKS/AGIC en el blog).
 
@@ -38,3 +37,11 @@ Resultado final: `tflint` 0 issues, `checkov` 36 passed / 0 failed / 4 skipped.
 CI copiado 1:1 de `aws-vpc`/`azure-virtual-network` (mismos SHAs de Actions ya pineados por ellos, no re-verificados de nuevo acá): `gitleaks.yml`, `scorecard.yml`, `.pre-commit-config.yaml`, `.github/dependabot.yml` (terraform + github-actions), `SECURITY.md`. **A propósito NO se copió el patrón `terraform-plan.yml`/`terraform-apply.yml`** de `aws-eks-cluster`/`azure-aks-cluster` - el usuario pidió explícitamente evitar cualquier deploy automático por ahora, y esos workflows necesitarían credenciales/OIDC reales de AWS y Azure wireados como secrets del repo, algo que no se configuró ni se pidió todavía. `terraform-validate.yml` es intencionalmente validate-only (fmt/validate/tflint/checkov), sin `plan` ni `apply`, sin necesitar ningún secret.
 
 Después de crear el repo en GitHub: branch protection en `main` copiada de `aws-vpc` (`required_status_checks: ["fmt + validate", "gitleaks"]`, `strict: true`, sin admin bypass, sin force-push ni delete). Secret scanning + push protection son automáticos en repos públicos, no necesitan configuración manual.
+
+**Gotcha de CI, no de código**: el `gitleaks` del primer push salió rojo (`fatal: ambiguous argument '<primer commit>^..<segundo commit>'`) porque el primer push tenía 2 commits y el primero es la raíz (sin padre) - la action intenta diffear `before^..after` y `^` no existe sobre un commit raíz. Confirmado que es solo un artefacto del primer push: los PRs de Dependabot que se abrieron después corrieron `gitleaks` limpio sin tocar nada. No hace falta re-disparar ni arreglar nada.
+
+## Precios confirmados vía API pública (2026-09-13, no adivinados)
+
+- **Azure Retail Prices API** (`https://prices.azure.com/api/retail/prices?$filter=serviceName eq 'ExpressRoute' and armRegionName eq 'eastus'`, sin autenticación) - `ExpressRoute Standard Gateway` = **$0.19/hora**. De paso, todos los demás SKUs en la misma región: HighPerformance $0.49/h, ErGw1AZ $0.361/h, ErGw2AZ $0.632/h, ErGw3AZ $2.151/h, ErGwScale $0.21/h/unidad, UltraPerformance $1.87/h.
+- **AWS Price List API** (`https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/current/us-east-1/index.json`) - confirma que el `aws_vpn_gateway` (Virtual Private Gateway) **no tiene cargo por hora en sí mismo**. Los únicos usage types con costo en `AmazonVPC`/Cloud Connectivity son `VpnConnection` ($0.05/h - una conexión IPsec real) y `VpnConcentrator`/`ClientVPN` - ninguno aplica acá, porque el VGW de este repo solo sirve de punto de asociación del DX Gateway, sin ninguna `aws_vpn_connection` creada. **Corregí el README, que antes decía "~$0.05/hora" para el VPN Gateway - ese número es el de una VPN Connection, no el del VGW en sí, que es gratis.**
+- Conclusión: el costo real de este PoC está casi enteramente del lado Azure (~$139/mes solo por la ExpressRoute Gateway) - el lado AWS que cumple el mismo rol de "attach point" (DX Gateway + VGW) es gratis en su totalidad.

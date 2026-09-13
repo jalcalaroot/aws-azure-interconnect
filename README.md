@@ -18,7 +18,7 @@ flowchart LR
 
     subgraph Azure["Azure · East US"]
         vnet["VNet vnet-aws-azure-interconnect-poc\n10.200.0.0/16"]
-        vm["VM Standard_B1s\n(Run Command, sin RDP/SSH)"]
+        vm["VM Standard_B1ls\n(Run Command, sin RDP/SSH)"]
         ergw["ExpressRoute Gateway"]
         vnet --- vm
         vnet --- ergw
@@ -40,19 +40,21 @@ Confirmado en vivo contra el registro de Terraform (2026-09-13, `hashicorp/aws` 
 | ExpressRoute Virtual Network Gateway (lado Azure) | El intercambio de activation key entre ambos lados |
 | Las 2 instancias de prueba (EC2 + VM) | |
 
-## Costos (estimados - confirmar antes de aplicar)
+## Costos (confirmados vía las APIs de precios públicas de cada nube, 2026-09-13)
 
 | Recurso | Costo | Notas |
 |---|---|---|
 | AWS Interconnect | **Gratis hasta 500 Mbps** (Tier 1, uno por región/proveedor) | El preview con Azure está topado a 1 Gbps igual, así que entra en el tier gratuito |
 | Azure Multicloud Interconnect | **Gratis durante el preview** | Precio de GA no anunciado todavía |
 | DX Gateway (AWS) | Gratis | Objeto lógico, sin cargo por hora |
-| VPN Gateway (AWS) | ~$0.05/hora | Se factura mientras exista, independiente del Interconnect |
-| ExpressRoute Virtual Network Gateway (Azure), SKU `Standard` | No confirmado con exactitud - consultar la calculadora de Azure antes de aplicar | **El recurso más caro y más lento de este PoC** - tarda 30-60 min en aprovisionarse y sigue facturando por hora hasta que se borra |
+| VPN Gateway (AWS, `aws_vpn_gateway`) | **Gratis** | Confirmado contra el price list público de `AmazonVPC` (`pricing.us-east-1.amazonaws.com`) - el Virtual Private Gateway en sí no tiene cargo por hora. Solo se factura si además se crea una `aws_vpn_connection` (IPsec, $0.05/hora) - este repo no crea ninguna, el VGW acá solo sirve de punto de asociación del DX Gateway |
+| ExpressRoute Virtual Network Gateway (Azure), SKU `Standard` | **$0.19/hora ≈ $138.70/mes** (730 hs) | Confirmado contra la Azure Retail Prices API (`prices.azure.com`) para `eastus`. **El recurso más caro y más lento de este PoC** - tarda 30-60 min en aprovisionarse y sigue facturando por hora hasta que se borra. Otros SKUs en la misma región: HighPerformance $0.49/h, ErGw1AZ $0.361/h, ErGw2AZ $0.632/h, ErGw3AZ $2.151/h, UltraPerformance $1.87/h - `Standard` es el más barato que soporta `type = "ExpressRoute"` |
 | NAT Gateway regional (AWS, vía módulo `aws-vpc`) | ~$0.045/hora × 1 AZ (`az_count = 1` a propósito) | Igual que en `aws-vpc`, nada de esto es gratis por defecto |
-| EC2 `t3.micro` + VM `Standard_B1s` | Centavos/hora cada una | Las instancias más baratas que sirven para el test |
+| EC2 `t3.micro` + VM `Standard_B1ls` | Centavos/hora cada una | Las instancias más baratas que sirven para el test |
 
-**Ninguno de los dos servicios de Interconnect tiene contrato de largo plazo ni fee de cancelación** - todo es facturación por hora o gratis-en-preview, borrable en cualquier momento. El único costo "standing" fuera del Interconnect es el ExpressRoute Gateway (y el VPN Gateway/NAT del lado AWS), y esos también son pay-as-you-go sin permanencia.
+**El costo real de este PoC es casi enteramente del lado Azure** - la ExpressRoute Gateway (~$139/mes) no tiene equivalente pago del lado AWS: el DX Gateway y el VPN Gateway que cumplen el mismo rol de "attach point" son ambos gratis.
+
+**Ninguno de los dos servicios de Interconnect tiene contrato de largo plazo ni fee de cancelación** - todo es facturación por hora o gratis-en-preview, borrable en cualquier momento. El único costo "standing" fuera del Interconnect es el ExpressRoute Gateway (y el NAT Gateway del lado AWS), y esos también son pay-as-you-go sin permanencia.
 
 ## Prerrequisitos
 
