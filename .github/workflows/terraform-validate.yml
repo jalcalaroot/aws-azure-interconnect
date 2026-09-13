@@ -1,0 +1,73 @@
+name: Terraform Validate
+
+# Deliberately validate-only (fmt/validate/tflint/checkov) - no plan/apply
+# here. This repo touches real AWS + Azure accounts and there's no OIDC/
+# credentials wiring yet; a plan/apply workflow is out of scope until that's
+# set up and reviewed on purpose, not an oversight.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write # subir el SARIF de Checkov a la pestaña Security
+
+jobs:
+  validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: "~1.15"
+          terraform_wrapper: false
+
+      - name: Terraform fmt (check)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init + validate
+        run: |
+          terraform init -input=false -backend=false
+          terraform validate
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6 # v4.1.1
+
+      - name: tflint
+        env:
+          # sin esto, tflint --init pega contra la API pública de GitHub sin
+          # autenticar (60 req/hora por IP, compartida entre todos los runners
+          # de GitHub Actions) para bajar los plugins de aws/azurerm - rate
+          # limit real, no hipotético (ver aws-vpc/azure-virtual-network).
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tflint --init
+          tflint --recursive
+
+      - name: Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          soft_fail: false # bloqueante — findings aceptados quedan documentados con #checkov:skip inline
+          output_format: cli,sarif
+          output_file_path: console,results.sarif
+
+      - name: Subir resultados de Checkov a la pestaña Security
+        # correr también cuando Checkov falla (soft_fail: false) - ahí es
+        # cuando más importa que quede el SARIF. Pero NO si un paso anterior
+        # (tflint, validate) ya falló y Checkov ni llegó a correr.
+        if: always() && steps.checkov.outcome != 'skipped'
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: results.sarif
