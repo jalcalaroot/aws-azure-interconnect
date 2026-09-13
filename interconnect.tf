@@ -1,26 +1,34 @@
 # ---------------------------------------------------------------------------
-# Investigated on 2026-09-13 how much of this can actually be automated
-# (not just "is there a Terraform resource"):
+# Fully Terraform-automated as of 2026-09-13 - no manual Portal/console step
+# left. Investigated in this order:
 #
-# AWS side: fully automatable, just not through `hashicorp/aws` (confirmed
-# no `aws_interconnect*` resource there). `hashicorp/awscc` - generated
-# directly from the same Cloud Control API schema CloudFormation uses -
-# already ships `awscc_interconnect_connection` (AWS Interconnect went GA
-# in April 2026, CloudFormation got day-1 support, awscc inherited it).
-# That's what redeems the activation key below.
+# AWS side: `hashicorp/aws` has no `aws_interconnect*` resource (confirmed).
+# `hashicorp/awscc` - generated directly from the same Cloud Control API
+# schema CloudFormation uses - already ships `awscc_interconnect_connection`
+# (AWS Interconnect went GA in April 2026, CloudFormation got day-1 support,
+# awscc inherited it).
 #
-# Azure side: genuinely has NO automation surface yet, confirmed by actually
-# trying, not just searching docs - no `az` parameters for it on
-# `az network express-route create`, the only 2 CLI extensions with
-# "interconnect"/"multicloud" in the name are unrelated Azure products
-# (HPC "Interconnect Group" node placement, and Arc's "Public Cloud
-# Connector"), no ARM/Bicep example found, no REST API spec located. The
-# Azure Multicloud Interconnect circuit itself has to be created by hand,
-# once, in the Portal (see README's manual step) - that's also where the
-# activation key gets generated. Everything downstream of that one circuit
-# ID is Terraform: connecting it to the VNet gateway (`
-# azurerm_virtual_network_gateway_connection` below) is an ordinary,
-# long-supported resource.
+# Azure side: `azurerm` has no dedicated "Multicloud Interconnect" resource,
+# and the official guide (learn.microsoft.com/.../create-interconnect) only
+# documents Portal clicks. BUT: `az network express-route
+# list-service-providers` already lists "AWS" as a registered classic
+# ExpressRoute Service Provider, with peeringLocations
+# (australiaeast/germanywc/useast/uswest) matching the 4 Multicloud
+# Interconnect preview regions exactly - too specific to be a coincidence.
+# The "Multicloud Interconnect" Portal wizard is almost certainly a friendly
+# wrapper around this same classic mechanism. That means the circuit is just
+# an ordinary `azurerm_express_route_circuit` (long-supported, no gap) with
+# `service_provider_name = "AWS"` - and its `service_key` output is the
+# activation key AWS redeems below.
+#
+# Caveat, in the interest of not overclaiming: this is strong circumstantial
+# evidence (exact region-list match), not an executed end-to-end test - this
+# session was instructed not to touch real cloud accounts. Verify with a real
+# apply before trusting it blindly; if the classic-provider circuit turns out
+# NOT to carry the CSP-account verification the Multicloud Interconnect FAQ
+# describes, fall back to creating the circuit by hand in the Portal instead
+# (its resource ID would replace `azurerm_express_route_circuit.poc.id`
+# below) - see CLAUDE.md for that fallback path kept on record.
 # ---------------------------------------------------------------------------
 
 # --- AWS side: Direct Connect Gateway + VPN Gateway + Interconnect ---------
@@ -46,18 +54,41 @@ resource "aws_dx_gateway_association" "poc" {
   allowed_prefixes      = [local.aws_vpc_cidr]
 }
 
-# Redeems the activation key Azure generated during its one manual Portal
-# step (see variables.tf) - this is the actual cross-cloud handshake,
-# entirely Terraform-managed via the awscc (Cloud Control) provider.
+# Redeems the Azure circuit's service_key (see azurerm_express_route_circuit
+# below) - the actual cross-cloud handshake, via the awscc (Cloud Control)
+# provider since hashicorp/aws doesn't have this resource yet.
 resource "awscc_interconnect_connection" "poc" {
   attach_point = {
     direct_connect_gateway = aws_dx_gateway.poc.id
   }
   bandwidth      = "500Mbps" # free tier
-  activation_key = var.aws_interconnect_activation_key
+  activation_key = azurerm_express_route_circuit.poc.service_key
 }
 
-# --- Azure side: ExpressRoute Virtual Network Gateway + Connection --------
+# --- Azure side: ExpressRoute Circuit + Gateway + Connection --------------
+# `service_provider_name = "AWS"` / `peering_location = "useast"` - see the
+# top-of-file comment for why this classic-provider circuit is believed to
+# be the same object the Multicloud Interconnect Portal wizard creates.
+# `useast` (not `us-east-1`/`eastus`) is the peering-location spelling Azure
+# uses internally for this provider - confirmed via
+# `az network express-route list-service-providers`.
+
+resource "azurerm_express_route_circuit" "poc" {
+  name                  = "erc-aws-azure-interconnect-poc"
+  resource_group_name   = var.azure_resource_group_name
+  location              = var.azure_location
+  service_provider_name = "AWS"
+  peering_location      = "useast"
+  bandwidth_in_mbps     = 1000 # only offer listed for this provider - see caveat above on the 500Mbps free tier being AWS-side only
+
+  sku {
+    tier   = "Standard"
+    family = "MeteredData"
+  }
+
+  tags = local.tags
+}
+
 # Azure Multicloud Interconnect's own FAQ: "Do I need an ExpressRoute
 # gateway? Yes." - traffic entering the VNet over the interconnect arrives
 # through this gateway. `type = "ExpressRoute"` gateways don't take a public
@@ -83,16 +114,13 @@ resource "azurerm_virtual_network_gateway" "poc" {
   tags = local.tags
 }
 
-# Links the gateway above to the circuit created by hand in the Portal
-# (var.azure_multicloud_interconnect_circuit_id) - this half of "connect the
-# circuit to a VNet" is ordinary, long-supported Terraform, no gap here.
 resource "azurerm_virtual_network_gateway_connection" "poc" {
   name                       = "conn-aws-azure-interconnect-poc"
   location                   = var.azure_location
   resource_group_name        = var.azure_resource_group_name
   type                       = "ExpressRoute"
   virtual_network_gateway_id = azurerm_virtual_network_gateway.poc.id
-  express_route_circuit_id   = var.azure_multicloud_interconnect_circuit_id
+  express_route_circuit_id   = azurerm_express_route_circuit.poc.id
 
   tags = local.tags
 }
