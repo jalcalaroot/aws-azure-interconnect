@@ -1,6 +1,6 @@
 # aws-azure-interconnect
 
-PoC de conectividad privada entre AWS y Azure usando **AWS Interconnect** (preview, anunciado agosto 2026) y su contraparte **Azure Multicloud Interconnect** (preview). Región elegida: **us-east-1 ↔ East US** - el único par válido entre las 4 regiones del preview que incluye N. Virginia.
+PoC de conectividad privada entre AWS y Azure usando **AWS Interconnect** (GA desde abril 2026) y su contraparte **Azure Multicloud Interconnect** (preview). Región elegida: **us-east-1 ↔ East US** - el único par válido entre las 4 regiones del preview que incluye N. Virginia.
 
 **Estado: nada desplegado todavía.** Este repo es la planificación + el Terraform listo para revisar, no un `apply` ya corrido.
 
@@ -12,33 +12,40 @@ flowchart LR
         vpc["VPC jalcalaroot-interconnect-poc\n10.100.0.0/16"]
         ec2["EC2 t3.micro\n(SSM, sin SSH)"]
         dxgw["DX Gateway + VGW"]
+        conn["awscc_interconnect_connection\n(Terraform)"]
         vpc --- ec2
-        vpc --- dxgw
+        vpc --- dxgw --- conn
     end
 
     subgraph Azure["Azure · East US"]
         vnet["VNet vnet-aws-azure-interconnect-poc\n10.200.0.0/16"]
         vm["VM Standard_B1ls\n(Run Command, sin RDP/SSH)"]
-        ergw["ExpressRoute Gateway"]
+        ergw["ExpressRoute Gateway\n(Terraform)"]
+        circuit["ExpressRoute Circuit\nPort type: Multicloud Interconnect\n(manual, Portal)"]
         vnet --- vm
-        vnet --- ergw
+        vnet --- ergw --- circuit
     end
 
-    dxgw <-->|"AWS Interconnect ↔ Azure Multicloud Interconnect\n(creado a mano, sin soporte de Terraform aún)"| ergw
+    conn <-->|"activation key\n(generada a mano en Azure, redimida por Terraform en AWS)"| circuit
 ```
 
 Ninguna instancia tiene un puerto de administración abierto (ni SSH ni RDP) - se gestionan por SSM (AWS) y Run Command (Azure), la misma decisión de "sin bastion" ya tomada en el trabajo de EKS/AKS. Lo único que cruza la conexión es ICMP y un HTTP echo en el puerto 8080, para probar que la ruta privada funciona.
 
 ## Qué maneja Terraform y qué no
 
-Confirmado en vivo contra el registro de Terraform (2026-09-13, `hashicorp/aws` 6.64.0 y `hashicorp/azurerm` 5.5.0): **ninguno de los dos providers tiene todavía un recurso para el Interconnect en sí** (ni `aws_interconnect` ni un `azurerm_multicloud_interconnect`). Es un preview muy nuevo, tiene sentido que el soporte de Terraform no haya llegado.
+Investigado a fondo el 2026-09-13 (no solo "¿existe el resource?", sino "¿se puede automatizar de verdad?"):
 
-| Maneja Terraform (este repo) | Se crea a mano (ver runbook abajo) |
+| Maneja Terraform (este repo) | Se crea a mano (una sola vez) |
 |---|---|
-| VPC + VNet (reusando `aws-vpc` y `azure-virtual-network`) | El recurso "AWS Interconnect" en sí (consola o AWS CLI) |
-| DX Gateway + VPN Gateway (lado AWS) | El recurso "Azure Multicloud Interconnect" en sí (Portal o `az`) |
-| ExpressRoute Virtual Network Gateway (lado Azure) | El intercambio de activation key entre ambos lados |
+| VPC + VNet (reusando `aws-vpc` y `azure-virtual-network`) | El circuito ExpressRoute con Port type "Azure Multicloud Interconnect" (**solo Azure Portal** - ver por qué abajo) |
+| DX Gateway + VPN Gateway (lado AWS) | Generar la activation key ahí mismo |
+| **`awscc_interconnect_connection`** (lado AWS - redime la key, ver abajo) | |
+| ExpressRoute Virtual Network Gateway + Connection (lado Azure) | |
 | Las 2 instancias de prueba (EC2 + VM) | |
+
+**Lado AWS: automatizable, pero no con el provider `aws`.** `hashicorp/aws` 6.64.0 no tiene ningún recurso `aws_interconnect*` (confirmado contra el registro de Terraform). Pero AWS Interconnect pasó a **GA en abril 2026** y CloudFormation recibió soporte el día 1 (`AWS::Interconnect::Connection`) - y **`hashicorp/awscc`** (el provider "Cloud Control", generado automáticamente del mismo schema que usa CloudFormation) **ya tiene `awscc_interconnect_connection`** con el schema completo. Por eso este repo usa `aws` para todo lo demás y `awscc` puntualmente para este recurso - es un patrón normal, no un hack.
+
+**Lado Azure: no hay ninguna superficie de automatización todavía, confirmado probando, no solo buscando en la doc.** Se descartaron en orden: `az network express-route create --help` (sin parámetros para esto), 2 extensiones de CLI con "interconnect"/"multicloud" en el nombre (`interconnect` = grupos de nodos HPC/InfiniBand, no tiene nada que ver; `multicloud-connector` = Azure Arc Public Cloud Connector, tampoco), ningún ejemplo de ARM/Bicep publicado, ningún spec de REST API encontrado en `Azure/azure-rest-api-specs`. La única guía oficial (`learn.microsoft.com/.../create-interconnect`) documenta exclusivamente los clicks del Portal. Por eso el circuito en sí es el único paso manual de todo este repo - todo lo que depende de su ID (conectarlo al Virtual Network Gateway) sí es Terraform normal (`azurerm_virtual_network_gateway_connection`, un recurso viejo y estable).
 
 ## Costos (confirmados vía las APIs de precios públicas de cada nube, 2026-09-13)
 
@@ -58,17 +65,29 @@ Confirmado en vivo contra el registro de Terraform (2026-09-13, `hashicorp/aws` 
 
 ## Prerrequisitos
 
-- Cuenta AWS con acceso a `us-east-1` y permisos para Direct Connect/VPN Gateway/EC2.
-- Suscripción Azure con acceso a `eastus` y permisos para Network/Compute.
+- Cuenta AWS con acceso a `us-east-1` y permisos para Direct Connect/VPN Gateway/EC2/Interconnect.
+- Suscripción Azure con acceso a `eastus` y permisos para Network/Compute, más acceso al Portal para el paso manual.
 - Una clave pública SSH para `var.azure_vm_ssh_public_key` (no se usa para acceder de verdad, Azure la exige igual para crear la VM).
-- `terraform >= 1.10`, con los providers `aws ~> 6.0` y `azurerm ~> 5.0`.
+- `terraform >= 1.10`, con los providers `aws ~> 6.0`, `azurerm ~> 5.0` y `awscc ~> 1.0`.
+
+## Paso manual (el único de todo este repo)
+
+Antes del primer `apply`, en el [Azure Portal](https://portal.azure.com) → **Hybrid connectivity** → **Azure Multicloud Interconnect** → **Set up Azure Multicloud Interconnect**:
+
+1. Crear el circuito: Port type = **Azure Multicloud Interconnect**, proveedor = AWS, región = `eastus`, bandwidth = 500 Mbps (tier gratis).
+2. Generar la activation key, usando el Account ID de tu cuenta AWS.
+3. Copiar dos cosas: el **resource ID del circuito** (algo como `/subscriptions/.../expressRouteCircuits/...`) y la **activation key**.
+
+Esos dos valores van en `terraform.tfvars` (ver abajo) - de ahí en más todo es `terraform apply`, incluyendo redimir la key del lado AWS.
 
 ## Uso
 
 ```hcl
-# terraform.tfvars (no versionar si tiene datos sensibles - ver .gitignore)
-azure_subscription_id  = "<tu subscription id>"
-azure_vm_ssh_public_key = "ssh-ed25519 AAAA..."
+# terraform.tfvars (no versionar - contiene la activation key, ver .gitignore)
+azure_subscription_id                     = "<tu subscription id>"
+azure_vm_ssh_public_key                   = "ssh-ed25519 AAAA..."
+azure_multicloud_interconnect_circuit_id  = "/subscriptions/.../expressRouteCircuits/..."
+aws_interconnect_activation_key           = "<key generada en el paso manual de arriba>"
 ```
 
 ```
@@ -77,20 +96,13 @@ terraform plan   # revisar antes de aplicar - ver tabla de costos arriba
 terraform apply
 ```
 
-## Runbook de activación manual (Interconnect)
+Después del `apply`: `terraform output aws_interconnect_connection_state` para confirmar que el handshake llegó a `available` (transiciona por `requested → pending → available`, puede tardar).
 
-Estos pasos no tienen Terraform todavía - hacerlos después del `apply` de arriba, usando los outputs `aws_dx_gateway_id` y `azure_expressroute_gateway_id`:
-
-1. Elegir de qué lado se genera la activation key (cualquiera de los dos sirve, ambos caminos están soportados).
-2. **Desde AWS**: crear el recurso "AWS Interconnect - multicloud" apuntando a Azure como proveedor, región `us-east-1`, adjuntado al `aws_dx_gateway_id` de arriba. Comando exacto: `aws help` (buscar el subcomando del preview - no lo asumo acá, es muy nuevo para citarlo de memoria).
-3. **Desde Azure**: redimir la key en el recurso "Azure Multicloud Interconnect", región `eastus`, apuntando al `azure_expressroute_gateway_id` de arriba. Comando exacto: `az networking --help` (mismo motivo, no lo asumo).
-4. Validar que ambos lados confirman proveedor/región/bandwidth/cuenta - si algo no matchea, la activación falla sin re-crear nada (según la FAQ de Azure).
-5. No hace falta configurar BGP a mano - lo gestionan ambas nubes.
-6. Probar conectividad: `aws ssm start-session` / `az vm run-command invoke` para pingear y curl:8080 entre `aws_instance_private_ip` y `azure_vm_private_ip`.
+Probar conectividad real: `aws ssm start-session` / `az vm run-command invoke` para pingear y hacer `curl :8080` entre los outputs `aws_instance_private_ip` y `azure_vm_private_ip`.
 
 ## Teardown
 
-`terraform destroy` cubre todo lo Terraform-managed. Borrar el recurso Interconnect de cada lado (Portal/consola) **antes** de correr el destroy, para no dejar un recurso manual huérfano facturando sin nada Terraform que lo reconozca.
+`terraform destroy` cubre todo lo Terraform-managed, **incluyendo la conexión de AWS** (`awscc_interconnect_connection`). Borrar el circuito de Azure a mano en el Portal **antes** del destroy, para no dejarlo huérfano facturando sin que nada lo reconozca.
 
 ## Módulos reusados
 

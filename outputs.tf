@@ -3,8 +3,12 @@ output "aws_vpc_id" {
 }
 
 output "aws_dx_gateway_id" {
-  description = "The DX Gateway to select as the attach point when creating the AWS Interconnect (console, or the AWS CLI command for this preview - check `aws help` for the exact current subcommand, not guessed here)."
-  value       = aws_dx_gateway.poc.id
+  value = aws_dx_gateway.poc.id
+}
+
+output "aws_interconnect_connection_state" {
+  description = "State of the awscc_interconnect_connection resource (requested/pending/available/down/...) - poll this instead of the AWS console to confirm the handshake completed."
+  value       = awscc_interconnect_connection.poc.state
 }
 
 output "aws_instance_private_ip" {
@@ -16,8 +20,7 @@ output "azure_vnet_id" {
 }
 
 output "azure_expressroute_gateway_id" {
-  description = "The ExpressRoute gateway to select as the attach point when creating the Azure Multicloud Interconnect resource (Portal, or `az` - check `az networking --help` for the exact current command, not guessed here)."
-  value       = azurerm_virtual_network_gateway.poc.id
+  value = azurerm_virtual_network_gateway.poc.id
 }
 
 output "azure_vm_private_ip" {
