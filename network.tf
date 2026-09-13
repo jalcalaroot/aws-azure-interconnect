@@ -20,6 +20,7 @@ locals {
 }
 
 module "aws_vpc" {
+  #checkov:skip=CKV_TF_1:Workspace convention - modules are versioned via git tags (v0.1.0, ...), not pinned commit hashes; see aws-vpc's own CLAUDE.md
   source = "git::https://github.com/jalcalaroot/aws-vpc.git?ref=v0.6.3"
 
   name     = "jalcalaroot-interconnect-poc"
@@ -28,13 +29,14 @@ module "aws_vpc" {
 }
 
 module "azure_vnet" {
+  #checkov:skip=CKV_TF_1:Same workspace convention as aws-vpc above - git tags, not commit hashes
   source = "git::https://github.com/jalcalaroot/azure-virtual-network.git?ref=v0.4.0"
 
   resource_group_name = var.azure_resource_group_name
-  location             = var.azure_location
-  vnet_name            = local.azure_vnet_name
-  vnet_address_space   = [local.azure_vnet_cidr]
-  tags                 = local.tags
+  location            = var.azure_location
+  vnet_name           = local.azure_vnet_name
+  vnet_address_space  = [local.azure_vnet_cidr]
+  tags                = local.tags
 }
 
 # ExpressRoute gateways require a subnet literally named "GatewaySubnet" -

@@ -17,10 +17,10 @@ resource "aws_security_group" "poc_instance" {
   vpc_id      = module.aws_vpc.vpc_id
 
   egress {
-    description = "All outbound (SSM agent needs this via the NAT Gateway)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS only - enough for the SSM agent via the NAT Gateway, nothing else needs outbound"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -69,11 +69,21 @@ resource "aws_iam_instance_profile" "ssm" {
 }
 
 resource "aws_instance" "poc" {
+  #checkov:skip=CKV_AWS_126:Detailed (1-min) monitoring has a real per-instance cost (~$2.10/mo) for a throwaway PoC test box - default 5-min monitoring is free and enough to see it's alive
   ami                    = data.aws_ssm_parameter.al2023_ami.value
   instance_type          = "t3.micro"
   subnet_id              = module.aws_vpc.compute_subnet_ids[0]
   vpc_security_group_ids = [aws_security_group.poc_instance.id]
   iam_instance_profile   = aws_iam_instance_profile.ssm.name
+  ebs_optimized          = true # free on Nitro instance types (t3.*) - already the API default, just making the Terraform attribute match reality
+
+  metadata_options {
+    http_tokens = "required" # IMDSv2 only
+  }
+
+  root_block_device {
+    encrypted = true # AWS-managed key, no extra cost
+  }
 
   user_data = <<-EOF
     #!/bin/bash
@@ -118,19 +128,20 @@ resource "azurerm_network_interface" "poc_vm" {
 }
 
 resource "azurerm_network_interface_security_group_association" "poc_vm" {
-  network_interface_id     = azurerm_network_interface.poc_vm.id
+  network_interface_id      = azurerm_network_interface.poc_vm.id
   network_security_group_id = azurerm_network_security_group.poc_vm.id
 }
 
 resource "azurerm_linux_virtual_machine" "poc" {
+  #checkov:skip=CKV_AZURE_50:Bootstrapped via cloud-init (custom_data) on purpose - a Custom Script Extension would be one more billed/managed agent for a single `python3 -m http.server` on a throwaway PoC VM
   name                            = "vm-aws-azure-interconnect-poc"
   resource_group_name             = var.azure_resource_group_name
   location                        = var.azure_location
-  size                            = "Standard_B1s"
+  size                            = "Standard_B1ls" # cheapest non-retired burstable x64 size - clean per tflint's azurerm ruleset (B1s/B1ms/B2s all flagged retired-or-announced)
   admin_username                  = "azureuser"
   network_interface_ids           = [azurerm_network_interface.poc_vm.id]
   disable_password_authentication = true
-  tags                             = local.tags
+  tags                            = local.tags
 
   admin_ssh_key {
     username   = "azureuser"
