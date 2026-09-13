@@ -1,11 +1,11 @@
 # aws-azure-interconnect
 
-PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect / Azure Multicloud Interconnect (ambos en preview, anunciados/documentados agosto 2026). Vive en `multicloud/`, junto a `prowler-multicloud-agent`, no bajo `aws/` ni `azure/` - es intrínsecamente de las dos nubes.
+PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect (GA desde abril 2026, Google Cloud como partner de lanzamiento) y su contraparte Azure Multicloud Interconnect (todavía en preview). Vive en `multicloud/`, junto a `prowler-multicloud-agent`, no bajo `aws/` ni `azure/` - es intrínsecamente de las dos nubes.
 
 ## Decisiones (2026-09-13)
 
 - **Región: us-east-1 ↔ East US.** Es el único par que incluye N. Virginia entre los 4 soportados en el preview (los otros 3: N. California↔West US, Sydney↔Australia East, Frankfurt↔Germany West Central). El usuario pidió explícitamente us-east-1.
-- **Ningún recurso de Terraform existe todavía para el Interconnect en sí.** Verificado en vivo (no asumido) contra el registro de Terraform vía `search_providers` del MCP: `hashicorp/aws` 6.64.0 no tiene un resource `interconnect` (sí tiene toda la familia `dx_*` normal), `hashicorp/azurerm` 5.5.0 no tiene nada bajo `multicloud`/`multicloud_interconnect` (sí tiene toda la familia `express_route_*` normal). Ambos recursos de Interconnect se crean a mano - ver runbook en README. Si en una sesión futura estos recursos ya existen en un provider más nuevo, esto se puede migrar a Terraform y el runbook manual se vuelve innecesario.
+- **`hashicorp/aws`/`hashicorp/azurerm` no tienen el recurso del Interconnect en sí** (confirmado vía `search_providers`: `aws` 6.64.0 no tiene `interconnect`, `azurerm` 5.5.0 no tiene `multicloud_interconnect`). Pero eso no significa "hay que hacerlo a mano" - ver la sección completa más abajo ("Investigación de automatización real"): el lado AWS se resolvió con el provider `awscc`, el lado Azure genuinamente no tiene ninguna superficie de automatización todavía (confirmado probando, no solo buscando en la doc).
 - **CIDRs no superpuestos a propósito** (`10.100.0.0/16` AWS, `10.200.0.0/16` Azure) - a diferencia de otros repos de este workspace que usan `10.0.0.0/16` en ambos lados porque nunca se conectan directamente, acá sí se conectan, así que superponer rompería el ruteo.
 - **`az_count = 1`** en el módulo `aws-vpc` (default es 3) - el NAT Gateway regional se factura por AZ activa, y este PoC no necesita alta disponibilidad, solo probar que la conectividad funciona. Mismo criterio de costo que ya aplica en `aws-vpc`/`azure-virtual-network` (nada con costo recurrente prendido por defecto si no hace falta).
 - **Sin bastion, sin SSH/RDP expuesto** - mismo criterio ya decidido en el trabajo de EKS/AKS (un bastion solo mueve dónde tipeás los comandos, no reduce pasos). Acceso a las 2 instancias de prueba vía SSM (AWS) y Run Command (Azure) - ninguna requiere un puerto de management abierto en el Security Group/NSG, solo el tráfico de prueba (ICMP + 8080) desde el CIDR de la otra nube.
@@ -16,10 +16,32 @@ PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect / Azure Multicl
 
 En la sesión donde se escribió este repo, tanto `terraform version` como `gcloud config list` se ejecutaban con exit code distinto de error pero **sin ninguna salida** (ni stdout ni stderr), con y sin sandbox de Claude Code deshabilitado - parece un problema de los paquetes snap en ese entorno, no de permisos. Ningún `.tf` de este repo fue validado con `terraform fmt`/`validate`/`plan` real todavía - correr eso en una shell normal antes del primer `apply`.
 
+## Investigación de automatización real (2026-09-13) - por qué el repo terminó como está
+
+El usuario pidió explícitamente estar seguro de automatizar de verdad, no dejar nada "manual" sin haber agotado las alternativas. Se investigó en este orden:
+
+1. **CloudFormation (AWS)**: sí existe - `AWS::Interconnect::Connection`, documentado en `docs.aws.amazon.com`, con `ActivationKey`/`AttachPoint`/`Bandwidth`/`RemoteAccount`. Tiene sentido: AWS Interconnect pasó a **GA en abril 2026** y CloudFormation (nativo de AWS) recibió soporte el día 1 - típico que el provider de Terraform tarde más en ponerse al día.
+2. **Bicep/ARM (Azure)**: el objeto real detrás de "Azure Multicloud Interconnect" **no es un tipo de recurso nuevo** - es un ExpressRoute Circuit normal (`Microsoft.Network/expressRouteCircuits`) con Port type = "Azure Multicloud Interconnect". No se encontró ningún ejemplo de Bicep/ARM publicado para los campos específicos de esta feature (selección de CSP, Account ID remoto, generar/redimir key).
+3. **`hashicorp/awscc`** (provider "Cloud Control API", generado automáticamente del mismo schema que CloudFormation): **ya tiene `awscc_interconnect_connection`**, schema completo confirmado (`attach_point`, `activation_key`, `bandwidth`, `remote_account`, `environment_id` mutuamente exclusivo con `activation_key`). Esto resuelve el lado AWS por completo, sin esperar a que `hashicorp/aws` se ponga al día.
+4. **`azure/azapi`** (provider que declara cualquier recurso ARM en crudo, pensado justo para features en preview): es el candidato obvio para el lado Azure, pero requiere saber el `type@api-version` y el body JSON exactos - no encontrados en ninguna doc pública.
+5. **Probado en vivo, no solo buscado en Google**, para confirmar que el lado Azure realmente no tiene nada:
+   - `az network express-route create --help` - sin ningún parámetro relacionado a multicloud/CSP externo.
+   - `az extension list-available` con "multicloud"/"interconnect" en el nombre → 2 resultados, ambos instalados y descartados: **`interconnect`** es Azure HPC "Interconnect Group" (topología de nodos InfiniBand para clusters de cómputo, nada que ver), **`multicloud-connector`** es Azure Arc "Public Cloud Connector" (para que Arc vea recursos de AWS/GCP, tampoco). Ambas extensiones se desinstalaron después de confirmarlo.
+   - Búsqueda en `Azure/azure-rest-api-specs` en GitHub sin resultado para esta feature.
+   - Conclusión: **cero superficie de automatización del lado Azure hoy** - ni CLI, ni ARM/Bicep, ni REST API pública. Solo el wizard del Portal, tal como documenta la única guía oficial (`learn.microsoft.com/.../create-interconnect`).
+
+**Decisión final, confirmada con el usuario**: aceptar el circuito de Azure (creación + generación de la activation key) como el **único** paso manual de todo el repo. Todo lo demás quedó en Terraform:
+
+- Lado AWS: `awscc_interconnect_connection` (nuevo, en `interconnect.tf`) redime la key generada a mano en Azure.
+- Lado Azure: `azurerm_virtual_network_gateway_connection` (recurso viejo y estable, sin gap) conecta el Virtual Network Gateway ya existente al circuito creado a mano, usando su resource ID como variable (`azure_multicloud_interconnect_circuit_id`).
+
+Nuevas variables sin default: `azure_multicloud_interconnect_circuit_id` (el ID del circuito manual) y `aws_interconnect_activation_key` (`sensitive = true`, la key generada en ese mismo paso manual).
+
 ## Pendiente
 
-- Encontrar el comando exacto de AWS CLI / `az` para crear y redimir la activation key del Interconnect (muy nuevo, no confirmado en esta sesión - ver README).
 - Decidir si esto termina viviendo solo como PoC descartable o si se documenta como arquitectura de referencia (como pasó con Container Apps y AKS/AGIC en el blog).
+- Cuando Azure publique CLI/ARM/Bicep para el circuito multicloud, evaluar reemplazar el paso manual por `azapi_resource` (o por `azurerm_express_route_circuit` directo, si el campo `service_provider_name` termina aceptando "Azure Multicloud Interconnect" como valor válido) y borrar la sección de "paso manual" del README.
+- Validar con `terraform init`/`plan` (vía Docker, ver gotcha) que el provider `awscc` resuelve bien y que `awscc_interconnect_connection`/`azurerm_virtual_network_gateway_connection` no tienen errores de schema - todavía no se corrió después de este cambio.
 
 ## Validación real hecha (2026-09-13), CI y seguridad copiada de los repos hermanos
 
