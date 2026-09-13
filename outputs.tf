@@ -23,6 +23,11 @@ output "azure_expressroute_gateway_id" {
   value = azurerm_virtual_network_gateway.poc.id
 }
 
+output "azure_express_route_circuit_service_provider_provisioning_state" {
+  description = "NotProvisioned/Provisioning/Provisioned/Deprovisioning from Azure's side of the circuit - cross-check against aws_interconnect_connection_state above."
+  value       = azurerm_express_route_circuit.poc.service_provider_provisioning_state
+}
+
 output "azure_vm_private_ip" {
   value = azurerm_network_interface.poc_vm.private_ip_address
 }

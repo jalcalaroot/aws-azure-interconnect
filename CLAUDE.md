@@ -30,18 +30,31 @@ El usuario pidió explícitamente estar seguro de automatizar de verdad, no deja
    - Búsqueda en `Azure/azure-rest-api-specs` en GitHub sin resultado para esta feature.
    - Conclusión: **cero superficie de automatización del lado Azure hoy** - ni CLI, ni ARM/Bicep, ni REST API pública. Solo el wizard del Portal, tal como documenta la única guía oficial (`learn.microsoft.com/.../create-interconnect`).
 
-**Decisión final, confirmada con el usuario**: aceptar el circuito de Azure (creación + generación de la activation key) como el **único** paso manual de todo el repo. Todo lo demás quedó en Terraform:
+**Decisión intermedia (superada, ver más abajo)**: en la primera pasada se aceptó el circuito de Azure (creación + generación de la activation key) como el único paso manual, con `azure_multicloud_interconnect_circuit_id` y `aws_interconnect_activation_key` como variables sin default. El usuario pidió explícitamente después "¿y por CLI podemos implementarlo, para no hacer nada manual?" - eso llevó al hallazgo de abajo, que eliminó esas 2 variables por completo.
 
-- Lado AWS: `awscc_interconnect_connection` (nuevo, en `interconnect.tf`) redime la key generada a mano en Azure.
-- Lado Azure: `azurerm_virtual_network_gateway_connection` (recurso viejo y estable, sin gap) conecta el Virtual Network Gateway ya existente al circuito creado a mano, usando su resource ID como variable (`azure_multicloud_interconnect_circuit_id`).
+## El giro: "AWS" ya es un Service Provider clásico de ExpressRoute (2026-09-13, mismo día)
 
-Nuevas variables sin default: `azure_multicloud_interconnect_circuit_id` (el ID del circuito manual) y `aws_interconnect_activation_key` (`sensitive = true`, la key generada en ese mismo paso manual).
+Antes de rendirse con "no hay CLI para esto", se probó algo que no se había probado: `az network express-route list-service-providers`. Resultado real (no de la doc, de la API en vivo):
+
+```json
+{
+  "name": "AWS",
+  "peeringLocations": ["australiaeast", "germanywc", "useast", "useast2euap", "uswest"],
+  "bandwidthsOffered": [{"offerName": "1Gbps", "valueInMbps": 1000}]
+}
+```
+
+Los 4 `peeringLocations` (menos `useast2euap`, que parece un early-access interno) son **exactamente** las 4 regiones del preview de Multicloud Interconnect (australiaeast, germanywc, useast, uswest). Coincidencia demasiado específica para ser casualidad: el circuito "Multicloud Interconnect" que arma el wizard del Portal es, con altísima probabilidad, un `azurerm_express_route_circuit` de toda la vida con `service_provider_name = "AWS"` - un recurso que **ya existe en Terraform desde siempre**, sin ningún gap. Su atributo exportado `service_key` ("The string needed by the service provider to provision the ExpressRoute circuit") es la activation key que `awscc_interconnect_connection.activation_key` necesita del otro lado - se referencia directo entre recursos, sin pasar por ninguna variable ni paso manual.
+
+`interconnect.tf` se reescribió sobre esta base: `azurerm_express_route_circuit.poc` (provider AWS, peering location `useast`) genera la key, `awscc_interconnect_connection.poc.activation_key = azurerm_express_route_circuit.poc.service_key` la redime en el mismo `apply`. Las variables `azure_multicloud_interconnect_circuit_id`/`aws_interconnect_activation_key` se borraron - ya no hacen falta.
+
+**Caveat que hay que mantener visible, no es un hecho 100% confirmado**: esto es una inferencia por evidencia circunstancial fuerte (el match de regiones), no un `apply` real ejecutado contra una cuenta - esta sesión tuvo instrucción explícita de no tocar cuentas reales en ningún momento. Antes de confiar en esto para un despliegue de verdad: correr un `apply` real y confirmar que `service_provider_provisioning_state` avanza y que el `awscc_interconnect_connection.state` llega a `available` (no solo que ambos recursos se crean sin error - un circuito ExpressRoute clásico con provider "AWS" podría crearse sin problema y aun así no completar el handshake multicloud real si el backend de Azure distingue internamente entre "circuito ExpressRoute normal con un proveedor que se llama AWS" y "circuito genuino de Multicloud Interconnect"). Si falla esa validación, el plan B es el que se descartó en esta vuelta: crear el circuito a mano en el Portal (Port type = "Azure Multicloud Interconnect" explícito) y volver a introducir las 2 variables borradas con su resource ID/activation key.
 
 ## Pendiente
 
 - Decidir si esto termina viviendo solo como PoC descartable o si se documenta como arquitectura de referencia (como pasó con Container Apps y AKS/AGIC en el blog).
-- Cuando Azure publique CLI/ARM/Bicep para el circuito multicloud, evaluar reemplazar el paso manual por `azapi_resource` (o por `azurerm_express_route_circuit` directo, si el campo `service_provider_name` termina aceptando "Azure Multicloud Interconnect" como valor válido) y borrar la sección de "paso manual" del README.
-- Validar con `terraform init`/`plan` (vía Docker, ver gotcha) que el provider `awscc` resuelve bien y que `awscc_interconnect_connection`/`azurerm_virtual_network_gateway_connection` no tienen errores de schema - todavía no se corrió después de este cambio.
+- **Antes de cualquier `apply` real**: validar el caveat de arriba - confirmar que `azurerm_express_route_circuit` con `service_provider_name = "AWS"` efectivamente completa el handshake de Multicloud Interconnect y no solo crea un circuito ExpressRoute sin más.
+- Confirmar si el tier gratis de 500 Mbps del lado AWS sigue aplicando cuando el circuito de Azure se crea a 1 Gbps (única opción de `bandwidthsOffered` para este provider) - ver nota en la tabla de costos del README.
 
 ## Validación real hecha (2026-09-13), CI y seguridad copiada de los repos hermanos
 
