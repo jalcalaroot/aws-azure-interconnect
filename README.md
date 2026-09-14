@@ -8,28 +8,28 @@ PoC de conectividad privada entre AWS y Azure usando **AWS Interconnect** (GA de
 
 ```mermaid
 flowchart LR
-    subgraph AWS["AWS · us-east-1"]
-        vpc["VPC jalcalaroot-interconnect-poc\n10.100.0.0/16"]
-        ec2["EC2 t3.micro\n(SSM, sin SSH)"]
+    subgraph AWS["AWS · us-east-1 · VPC 10.100.0.0/16"]
+        ec2["Ubuntu 24.04 t3.micro\ncompute subnet\nping/curl/traceroute\n(SSM, sin SSH)"]
+        rtaws["Route table (compute)\n0.0.0.0/0 -> NAT\n10.200.0.0/16 -> VGW"]
         dxgw["DX Gateway + VGW"]
         conn["awscc_interconnect_connection"]
-        vpc --- ec2
-        vpc --- dxgw --- conn
+        ec2 --- rtaws --- dxgw --- conn
     end
 
-    subgraph Azure["Azure · East US"]
-        vnet["VNet vnet-aws-azure-interconnect-poc\n10.200.0.0/16"]
-        vm["VM Standard_B1ls\n(Run Command, sin RDP/SSH)"]
+    subgraph Azure["Azure · East US · VNet 10.200.0.0/16"]
+        vm["Ubuntu 24.04 Standard_B1ls\napp subnet\nping/curl/traceroute\n(Run Command, sin RDP/SSH)"]
+        rtazure["Route table (app)\nBGP-learned desde el circuito\n10.100.0.0/16 -> ExpressRoute GW"]
         ergw["ExpressRoute Gateway"]
         circuit["azurerm_express_route_circuit\nservice_provider_name = AWS"]
-        vnet --- vm
-        vnet --- ergw --- circuit
+        vm --- rtazure --- ergw --- circuit
     end
 
     conn <-->|"service_key del circuito\n= activation_key de la conexión\n(referencia directa entre recursos)"| circuit
 ```
 
-Ninguna instancia tiene un puerto de administración abierto (ni SSH ni RDP) - se gestionan por SSM (AWS) y Run Command (Azure), la misma decisión de "sin bastion" ya tomada en el trabajo de EKS/AKS. Lo único que cruza la conexión es ICMP y un HTTP echo en el puerto 8080, para probar que la ruta privada funciona.
+Las dos instancias son **Ubuntu 24.04 LTS** en ambos lados (mismo SO en las dos nubes a propósito - si falla un ping/curl, es la red, no una diferencia de herramientas), con `iputils-ping`/`curl`/`net-tools`/`dnsutils`/`traceroute` instalados vía `apt`. Ninguna tiene un puerto de administración abierto (ni SSH ni RDP) - se gestionan por SSM (AWS) y Run Command (Azure), la misma decisión de "sin bastion" ya tomada en el trabajo de EKS/AKS: estas 2 instancias **son** el "bastion" pedido, solo que sin acceso interactivo. Tráfico permitido entre ambas nubes: **ICMP, HTTP (80), HTTPS (443 - sin certificado real todavía, mismo echo plano) y 8080**.
+
+El ruteo entre las dos redes lo resuelve el circuito/BGP automáticamente (ninguna de las dos FAQs pide configurar rutas a mano) - la tabla de rutas de cada subnet ya enruta hacia el gateway local, y el gateway aprende por BGP el CIDR de la otra nube a través del Interconnect.
 
 ## Qué maneja Terraform - y por qué ya no hay ningún paso manual
 
@@ -89,7 +89,7 @@ terraform apply
 
 Después del `apply`: `terraform output aws_interconnect_connection_state` y `terraform output azure_express_route_circuit_service_provider_provisioning_state` para confirmar que el handshake completó de ambos lados (transiciona por `requested → pending → available` en AWS, `NotProvisioned → Provisioning → Provisioned` en Azure - puede tardar).
 
-Probar conectividad real: `aws ssm start-session` / `az vm run-command invoke` para pingear y hacer `curl :8080` entre los outputs `aws_instance_private_ip` y `azure_vm_private_ip`.
+Probar conectividad real: `aws ssm start-session` / `az vm run-command invoke` para pingear y hacer `curl` en los puertos 80, 443 y 8080 entre los outputs `aws_instance_private_ip` y `azure_vm_private_ip` (`traceroute`/`mtr` también disponibles si hay que ver por dónde va la ruta).
 
 ## Teardown
 
