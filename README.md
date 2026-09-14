@@ -49,6 +49,16 @@ Investigado a fondo el 2026-09-13 (no solo "¿existe el resource?", sino "¿se p
 | `azurerm_express_route_circuit` (Azure, genera la key) | ✅ |
 | ExpressRoute Virtual Network Gateway + Connection (Azure) | ✅ |
 | Las 2 instancias de prueba (EC2 + VM) | ✅ |
+| Ruteo + NACL para que las 2 redes se vean (`routing.tf`) | ✅ |
+
+## Networking: qué hace falta además de los Security Groups/NSG
+
+Revisado el 2026-09-14 leyendo el código fuente real de `aws-vpc`/`azure-virtual-network` (no asumido) - un Security Group/NSG permisivo **no alcanza solo** para que el tráfico cruce entre las 2 nubes. Se encontraron 2 gaps reales del lado AWS:
+
+1. **La route table de la subnet `compute`** (creada por el módulo `aws-vpc`) solo tiene `0.0.0.0/0 → NAT Gateway` - sin una ruta explícita a `10.200.0.0/16` por el VPN Gateway, el tráfico hacia Azure saldría por el NAT (a una IP pública) o no saldría. `routing.tf` agrega esa ruta vía `data.aws_route_table` (por `subnet_id`, sin depender de tags) + `aws_route`.
+2. **La NACL "private"** (compartida por `compute`+`data`) solo permite tráfico intra-VPC (`10.100.0.0/16`) - todo lo que cruza a `10.200.0.0/16` cae en el deny implícito sin importar lo que diga el Security Group (la NACL es *stateless* y se evalúa antes, a nivel de subnet). Punto más sutil: la NACL tampoco tenía **ninguna regla egress de puertos efímeros** hacia afuera - el módulo la diseñó para instancias que solo *inician* conexiones salientes, no para recibir conexiones entrantes desde fuera de la VPC. Sin esa regla, la respuesta a una conexión que Azure inicia hacia nosotros queda bloqueada de salida aunque la conexión entrante sí se haya permitido. `routing.tf` agrega las reglas de ICMP/80/443/8080 en ambos sentidos, más la regla de puertos efímeros de salida que faltaba.
+
+**Del lado Azure no hizo falta tocar nada** - `azure-virtual-network`'s `rt-app` ya tiene `bgp_route_propagation_enabled = true` (la ruta a `10.100.0.0/16` se aprende sola por BGP en cuanto conecta el circuito), y su NSG de subnet permite todo el tráfico Inbound/Outbound con origen/destino el service tag `VirtualNetwork` - que por diseño de Azure incluye las redes conectadas vía ExpressRoute, no solo la VNet local.
 
 ## Costos (confirmados vía las APIs de precios públicas de cada nube, 2026-09-13)
 
