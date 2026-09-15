@@ -67,6 +67,17 @@ resource "aws_network_acl_rule" "private_out_icmp_to_azure" {
   cidr_block     = local.azure_vnet_cidr
 }
 
+resource "aws_network_acl_rule" "private_in_ssh_from_azure" {
+  network_acl_id = module.aws_vpc.private_network_acl_id
+  rule_number    = 195 # inbound rule numbers are their own sequence, separate from egress - keep below 200 (icmp) to avoid colliding with it
+  egress         = false
+  protocol       = "tcp"
+  rule_action    = "allow"
+  cidr_block     = local.azure_vnet_cidr
+  from_port      = 22
+  to_port        = 22
+}
+
 resource "aws_network_acl_rule" "private_in_http_from_azure" {
   network_acl_id = module.aws_vpc.private_network_acl_id
   rule_number    = 201
@@ -98,6 +109,17 @@ resource "aws_network_acl_rule" "private_in_8080_from_azure" {
   cidr_block     = local.azure_vnet_cidr
   from_port      = 8080
   to_port        = 8080
+}
+
+resource "aws_network_acl_rule" "private_out_ssh_to_azure" {
+  network_acl_id = module.aws_vpc.private_network_acl_id
+  rule_number    = 205 # separate sequence from inbound - just needs to not collide with the other egress rule_numbers on this NACL (200, 211-213, 220)
+  egress         = true
+  protocol       = "tcp"
+  rule_action    = "allow"
+  cidr_block     = local.azure_vnet_cidr
+  from_port      = 22
+  to_port        = 22
 }
 
 resource "aws_network_acl_rule" "private_out_http_to_azure" {

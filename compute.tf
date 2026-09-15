@@ -1,15 +1,17 @@
 # Two minimal Ubuntu 24.04 LTS instances whose only job is to prove private
-# connectivity works end-to-end over the Interconnect: ICMP, plus a plain
+# connectivity works end-to-end over the Interconnect: ICMP, TCP 22 (just
+# the port - a `telnet` test, no key exchange between clouds), plus a plain
 # HTTP echo listening on 80, 443 and 8080 (443 is NOT real TLS here - same
 # plain HTTP echo, just also bound to that port, so the security-group/NSG
 # path for an eventual real HTTPS test is already open). Same OS on both
 # clouds on purpose, so a ping/curl failure means "network", not "different
-# tools on each side". No SSH/RDP exposed anywhere - matches the "no
-# bastion" decision already made for the EKS/AKS work: these 2 boxes ARE
-# the "bastion" the user asked for, just managed out-of-band (SSM / Run
-# Command) instead of an interactive jump host - neither security boundary
-# below opens an inbound management port, only the test traffic from the
-# other cloud's CIDR.
+# tools on each side". No interactive management access from outside either
+# cloud's own CIDR - matches the "no bastion" decision already made for the
+# EKS/AKS work: these 2 boxes ARE the "bastion" the user asked for, managed
+# out-of-band (SSM / Run Command). Port 22 is open ONLY between the two
+# private CIDRs over the Interconnect (never to 0.0.0.0/0) and only as a
+# reachability check - sshd runs by default on the stock Ubuntu image, no
+# private key is ever shared between the two clouds.
 
 # --- AWS side ---------------------------------------------------------------
 
@@ -47,6 +49,14 @@ resource "aws_security_group" "poc_instance" {
   }
 
   egress {
+    description = "SSH (port only, no key exchange) test traffic to the Azure VNet, over the Interconnect"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [local.azure_vnet_cidr]
+  }
+
+  egress {
     description = "HTTP/HTTPS/8080 test traffic to the Azure VNet, over the Interconnect"
     from_port   = 80
     to_port     = 8080
@@ -59,6 +69,14 @@ resource "aws_security_group" "poc_instance" {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
+    cidr_blocks = [local.azure_vnet_cidr]
+  }
+
+  ingress {
+    description = "SSH (port only, no key exchange) from the Azure VNet, over the Interconnect"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
     cidr_blocks = [local.azure_vnet_cidr]
   }
 
@@ -173,7 +191,7 @@ resource "azurerm_network_security_group" "poc_vm" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_ranges    = ["80", "443", "8080"]
+    destination_port_ranges    = ["22", "80", "443", "8080"]
     source_address_prefix      = local.aws_vpc_cidr
     destination_address_prefix = "*"
   }
@@ -197,7 +215,7 @@ resource "azurerm_network_security_group" "poc_vm" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_ranges    = ["80", "443", "8080"]
+    destination_port_ranges    = ["22", "80", "443", "8080"]
     source_address_prefix      = "*"
     destination_address_prefix = local.aws_vpc_cidr
   }
