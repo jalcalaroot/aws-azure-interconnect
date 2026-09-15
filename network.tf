@@ -30,7 +30,7 @@ module "aws_vpc" {
 
 module "azure_vnet" {
   #checkov:skip=CKV_TF_1:Same workspace convention as aws-vpc above - git tags, not commit hashes
-  source = "git::https://github.com/jalcalaroot/azure-virtual-network.git?ref=v0.4.0"
+  source = "git::https://github.com/jalcalaroot/azure-virtual-network.git?ref=v0.4.1"
 
   resource_group_name = var.azure_resource_group_name
   location            = var.azure_location
