@@ -2,6 +2,20 @@
 
 PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect (GA desde abril 2026, Google Cloud como partner de lanzamiento) y su contraparte Azure Multicloud Interconnect (todavía en preview). Vive en `multicloud/`, junto a `prowler-multicloud-agent`, no bajo `aws/` ni `azure/` - es intrínsecamente de las dos nubes.
 
+## `terraform plan` real corrido (2026-09-15) - 122 to add, 0 errores
+
+Primer contacto real con las cuentas de AWS y Azure del usuario, a pedido explícito ("¿estamos listos para desplegar?" → eligió solo `plan`, no `apply`). Nada se creó - esto es de solo lectura.
+
+**Cómo se corrió** (el `terraform`/`gcloud` snap de este sandbox sigue sin funcionar - ver gotcha más abajo, y la imagen `hashicorp/terraform` de Docker no trae `az` para que `azurerm` se autentique): se usó `mcr.microsoft.com/azure-cli:latest` como base (ya tiene `az` con la sesión de `az login` del usuario cacheada) y se instaló Terraform 1.10.5 encima al vuelo (`python3 -m zipfile`, porque esa imagen tampoco trae `unzip`), montando `~/.azure` (sesión cacheada, sin re-pedir login) y `~/.aws:ro`. `ARM_USE_CLI=true` para que `azurerm` reuse esa sesión. Se generó una SSH key nueva dedicada (`ssh-keygen -t ed25519`, no la personal del usuario) para `var.azure_vm_ssh_public_key`, y un `terraform.tfvars` local (gitignorado, nunca commiteado) con esa key + `azure_subscription_id`.
+
+**Resultado**: `terraform init` + `plan` corrieron sin ningún error contra las cuentas reales - **122 resources to add, 0 to change, 0 to destroy**. Se revisó específicamente cada recurso del Interconnect (`aws_dx_gateway`, `aws_vpn_gateway`, `awscc_interconnect_connection`, `azurerm_express_route_circuit` con `service_provider_name = "AWS"`, `azurerm_virtual_network_gateway` + `_connection`, y las correcciones de `routing.tf`) - todos planearon bien, y la referencia `azurerm_express_route_circuit.poc.service_key → awscc_interconnect_connection.poc.activation_key` resolvió correctamente entre recursos (ambos aparecen como `(sensitive value)`, esperado).
+
+**Lo que esto SÍ confirma**: credenciales y permisos reales de ambas cuentas están bien, el schema de todos los recursos (incluida la apuesta arriesgada `awscc`/circuito clásico) es válido contra las APIs reales, no hay typos ni referencias rotas.
+
+**Lo que esto NO confirma todavía** (`plan` no llama a la API de creación real): que Azure efectivamente complete el handshake de Multicloud Interconnect al crear el circuito con `service_provider_name = "AWS"` - esa validación de negocio específica solo pasa en el `apply` real. El caveat de la sección "El giro" más abajo sigue en pie hasta que se corra un `apply`.
+
+El archivo de plan (`tfplan.bin`, tenía `service_key`/`activation_key` en binario) se borró después de revisarlo - no se commiteó ni se dejó en el repo.
+
 ## Decisiones (2026-09-13)
 
 - **Región: us-east-1 ↔ East US.** Es el único par que incluye N. Virginia entre los 4 soportados en el preview (los otros 3: N. California↔West US, Sydney↔Australia East, Frankfurt↔Germany West Central). El usuario pidió explícitamente us-east-1.
