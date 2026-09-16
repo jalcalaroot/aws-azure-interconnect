@@ -2,7 +2,13 @@
 
 PoC de conectividad privada entre AWS y Azure usando **AWS Interconnect** (GA desde abril 2026) y su contraparte **Azure Multicloud Interconnect** (preview). Región elegida: **us-east-1 ↔ East US** - el único par válido entre las 4 regiones del preview que incluye N. Virginia.
 
-**Estado: nada desplegado todavía.** Este repo es la planificación + el Terraform listo para revisar, no un `apply` ya corrido. **100% `terraform apply`, sin ningún paso manual** - ver la sección de abajo para el porqué y el caveat importante que eso trae.
+## ⏸️ Estado: PAUSADO (2026-09-16), esperando acceso de Microsoft
+
+**Se probó de verdad y el circuito de Azure (`azurerm_express_route_circuit` con `service_provider_name = "AWS"`) falló** - quedó en `Failed`/`NotProvisioned`, con un `service_key` placeholder (no uno real). El match de regiones que hacía pensar que este circuito "clásico" era el mecanismo real de Multicloud Interconnect resultó ser una coincidencia, no el camino correcto - ver `CLAUDE.md` para el detalle completo de la investigación.
+
+Azure Multicloud Interconnect es una preview con **allow-list gestionado por Microsoft** (confirmado: cero resource providers "multicloud"/"interconnect" registrados en la suscripción). El acceso se pide en **[aka.ms/MCIForm](https://aka.ms/MCIForm)** - ya se envió el formulario, pendiente de aprobación. Todo lo que se había desplegado como prueba ya se destruyó (confirmado en ambas cuentas, cero costo corriendo). **No hay nada aplicado hoy, y no se va a tocar `interconnect.tf` hasta tener acceso aprobado.**
+
+Todo lo de abajo (arquitectura, tabla de "qué maneja Terraform", costos) describe el **diseño tal como está escrito en el código**, no algo confirmado funcionando end-to-end - tratalo como la base para retomar una vez aprobado el acceso, no como una demo lista.
 
 ## Arquitectura
 
@@ -39,7 +45,7 @@ Investigado a fondo el 2026-09-13 (no solo "¿existe el resource?", sino "¿se p
 
 **Lado Azure: la Portal wizard "Multicloud Interconnect" resultó ser un wrapper de algo que ya existe.** La búsqueda inicial de una feature nueva llamada "Multicloud Interconnect" no encontró nada automatizable (ni CLI extension real - se probaron y descartaron `interconnect` y `multicloud-connector`, ninguna tiene que ver -, ni ARM/Bicep, ni REST spec). Pero `az network express-route list-service-providers` **ya lista "AWS" como Service Provider clásico de ExpressRoute**, con `peeringLocations: [australiaeast, germanywc, useast, uswest]` - las 4 regiones del preview, exactas, no una coincidencia. Eso significa que el circuito no es más que un `azurerm_express_route_circuit` de toda la vida (recurso viejo, sin ningún gap) con `service_provider_name = "AWS"` - y su atributo `service_key` es la activation key que el lado AWS necesita. Cero pasos de Portal.
 
-⚠️ **Caveat honesto**: esto es una inferencia fuerte (el match exacto de regiones no puede ser casualidad), no un `apply` real confirmado - esta sesión tiene instrucción explícita de no tocar cuentas reales. Antes de un `apply` de verdad, vale la pena confirmar que este circuito "clásico" efectivamente completa el handshake multicloud (y no solo crea un circuito ExpressRoute sin más). Si no fuera así, el plan B (crear el circuito a mano en el Portal y pasar su ID) queda documentado en `CLAUDE.md`.
+⚠️ **Actualización (2026-09-16): esto se probó de verdad y falló.** El circuito se creó pero quedó en `provisioningState: Failed`, `serviceProviderProvisioningState: NotProvisioned`, con un `service_key` placeholder (`00000000-0000-0000-0000-000000000000`), no uno real. El match de regiones no era el mecanismo real - Azure Multicloud Interconnect necesita acceso aprobado por Microsoft (`aka.ms/MCIForm`), no hay atajo por API/CLI/Terraform. Ver la sección de estado al principio del archivo y `CLAUDE.md` para el detalle completo, incluida la investigación de por qué falló y qué se encontró (`service_provider_name` no es lo mismo que el "port type" que pide la doc oficial).
 
 | Recurso | Terraform |
 |---|---|
@@ -97,13 +103,13 @@ terraform plan   # revisar antes de aplicar - ver tabla de costos arriba
 terraform apply
 ```
 
-Después del `apply`: `terraform output aws_interconnect_connection_state` y `terraform output azure_express_route_circuit_service_provider_provisioning_state` para confirmar que el handshake completó de ambos lados (transiciona por `requested → pending → available` en AWS, `NotProvisioned → Provisioning → Provisioned` en Azure - puede tardar).
+Después del `apply`: `terraform output aws_interconnect_connection_state` y `terraform output azure_express_route_circuit_service_provider_provisioning_state` para confirmar que el handshake completó de ambos lados (transiciona por `requested → pending → available` en AWS, `NotProvisioned → Provisioning → Provisioned` en Azure - puede tardar). **Al 2026-09-16, este handshake no completa** - ver el aviso de estado al principio del archivo.
 
 Probar conectividad real: `aws ssm start-session` / `az vm run-command invoke` para pingear y hacer `curl` en los puertos 80, 443 y 8080 entre los outputs `aws_instance_private_ip` y `azure_vm_private_ip` (`traceroute`/`mtr` también disponibles si hay que ver por dónde va la ruta).
 
 ## Teardown
 
-`terraform destroy` cubre absolutamente todo - no queda ningún recurso creado fuera de Terraform que limpiar a mano.
+`terraform destroy` cubre todo lo que Terraform llegó a registrar en su state. **Gotcha real, no hipotético**: si el `apply` se corta a mitad de camino (pasó el 2026-09-16 - ver `CLAUDE.md`), los recursos que se estaban creando en ese momento pueden existir de verdad en la nube sin que Terraform los haya registrado todavía - `destroy` no los toca. Verificar a mano después (`az resource list --resource-group ...`, `aws ec2 describe-vpcs ...`) en vez de asumir que quedó todo limpio solo porque `destroy` no tiró error. Ese mismo día también aparecieron: un lock de state stale (`terraform force-unlock`) y el `lifecycle.prevent_destroy` hardcodeado del módulo `azure-virtual-network` bloqueando el borrado del VNet - ambos con la solución documentada en `CLAUDE.md`.
 
 ## Módulos reusados
 
