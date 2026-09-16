@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(terraform validate*)",
+      "Bash(tflint*)",
+      "Bash(/snap/terraform/current/terraform plan*)",
+      "Bash(terraform init*)",
+      "mcp__terraform__search_providers",
+      "mcp__terraform__get_provider_details",
+      "mcp__aws__aws___search_documentation",
+      "mcp__github__pull_request_read",
+      "mcp__azure__documentation",
+      "mcp__aws__aws___read_documentation",
+      "mcp__azure__wellarchitectedframework",
+      "mcp__terraform__get_latest_provider_version",
+      "mcp__azure__subscription_list"
+    ]
+  }
+}

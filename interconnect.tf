@@ -75,7 +75,7 @@ resource "awscc_interconnect_connection" "poc" {
 
 resource "azurerm_express_route_circuit" "poc" {
   name                  = "erc-aws-azure-interconnect-poc"
-  resource_group_name   = var.azure_resource_group_name
+  resource_group_name   = azurerm_resource_group.this.name
   location              = var.azure_location
   service_provider_name = "AWS"
   peering_location      = "useast"
@@ -102,7 +102,7 @@ resource "azurerm_express_route_circuit" "poc" {
 resource "azurerm_virtual_network_gateway" "poc" {
   name                = "ergw-aws-azure-interconnect-poc"
   location            = var.azure_location
-  resource_group_name = var.azure_resource_group_name
+  resource_group_name = azurerm_resource_group.this.name
   type                = "ExpressRoute"
   sku                 = "Standard" # cheapest ExpressRoute-capable SKU; $0.19/hour confirmed via the Azure Retail Prices API
 
@@ -117,7 +117,7 @@ resource "azurerm_virtual_network_gateway" "poc" {
 resource "azurerm_virtual_network_gateway_connection" "poc" {
   name                       = "conn-aws-azure-interconnect-poc"
   location                   = var.azure_location
-  resource_group_name        = var.azure_resource_group_name
+  resource_group_name        = azurerm_resource_group.this.name
   type                       = "ExpressRoute"
   virtual_network_gateway_id = azurerm_virtual_network_gateway.poc.id
   express_route_circuit_id   = azurerm_express_route_circuit.poc.id
