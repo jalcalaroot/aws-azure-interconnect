@@ -169,7 +169,7 @@ resource "aws_instance" "poc" {
 resource "azurerm_network_security_group" "poc_vm" {
   name                = "nsg-aws-azure-interconnect-poc"
   location            = var.azure_location
-  resource_group_name = var.azure_resource_group_name
+  resource_group_name = azurerm_resource_group.this.name
   tags                = local.tags
 
   security_rule {
@@ -224,7 +224,7 @@ resource "azurerm_network_security_group" "poc_vm" {
 resource "azurerm_network_interface" "poc_vm" {
   name                = "nic-aws-azure-interconnect-poc"
   location            = var.azure_location
-  resource_group_name = var.azure_resource_group_name
+  resource_group_name = azurerm_resource_group.this.name
   tags                = local.tags
 
   ip_configuration {
@@ -242,7 +242,7 @@ resource "azurerm_network_interface_security_group_association" "poc_vm" {
 resource "azurerm_linux_virtual_machine" "poc" {
   #checkov:skip=CKV_AZURE_50:Bootstrapped via cloud-init (custom_data) on purpose - a Custom Script Extension would be one more billed/managed agent for a single `python3 -m http.server` on a throwaway PoC VM
   name                            = "vm-aws-azure-interconnect-poc"
-  resource_group_name             = var.azure_resource_group_name
+  resource_group_name             = azurerm_resource_group.this.name
   location                        = var.azure_location
   size                            = "Standard_B1ls" # cheapest non-retired burstable x64 size - clean per tflint's azurerm ruleset (B1s/B1ms/B2s all flagged retired-or-announced)
   admin_username                  = "azureuser"

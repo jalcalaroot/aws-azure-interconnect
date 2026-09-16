@@ -2,6 +2,30 @@
 
 PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect (GA desde abril 2026, Google Cloud como partner de lanzamiento) y su contraparte Azure Multicloud Interconnect (todavía en preview). Vive en `multicloud/`, junto a `prowler-multicloud-agent`, no bajo `aws/` ni `azure/` - es intrínsecamente de las dos nubes.
 
+## PROYECTO PAUSADO (2026-09-16) - esperando acceso a la preview de Azure
+
+**Estado: todo lo desplegado se destruyó. No avanzar en conectividad hasta que el usuario confirme que Microsoft aprobó el acceso a la preview.**
+
+**Próximo paso (bloqueante, fuera de esta sesión):** el usuario ya envió el formulario de acceso **[Multicloud Interconnect Form](https://aka.ms/MCIForm)** el 2026-09-16, pidiendo soporte/habilitación de la preview de Azure Multicloud Interconnect para AWS en la suscripción `0a314178-d091-4e21-87d5-48ff79bd7ca4` (región East US / us-east-1). **Queda esperando que Microsoft apruebe el acceso** - no hay ETA conocido, no es autoservicio. No retomar `interconnect.tf` hasta que el usuario confirme la aprobación.
+
+### Qué pasó en el primer `apply` real (2026-09-15 noche → 2026-09-16 mañana)
+
+1. Se corrió el `apply` completo por primera vez contra las cuentas reales. Encontró y corrigió 2 bugs reales que ningún `plan`/`validate` había detectado: (a) nada creaba el resource group de Azure - agregado `azurerm_resource_group.this` en `network.tf`; (b) los subnets del módulo `azure-virtual-network` usaban sus CIDR default (`10.0.x.x`), fuera del rango de nuestra VNet custom (`10.200.0.0/16`) - se agregaron overrides explícitos (`public_subnet_cidr`, `app_subnet_cidr`, etc.) en la llamada al módulo.
+2. Con esos bugs corregidos, el `apply` volvió a correr - la ExpressRoute Gateway se creó bien (`Succeeded`), pero **el circuito (`azurerm_express_route_circuit.poc`, `service_provider_name = "AWS"`) falló de verdad**: quedó en `provisioningState: Failed`, `serviceProviderProvisioningState: NotProvisioned`, y con `serviceKey: "00000000-0000-0000-0000-000000000000"` (placeholder, no una key real). Confirma en la práctica el caveat que ya veníamos marcando como "inferencia fuerte, no probada" - **estaba mal**. El circuito clásico con provider "AWS" no es el mecanismo real de Multicloud Interconnect.
+3. El proceso de `apply` se colgó (probablemente esperando una respuesta de `awscc_interconnect_connection` contra la API nueva de AWS Interconnect, que nunca llegó) y tuvo que cortarse con `docker stop`. Como se cortó a mitad de la creación del circuito/gateway de Azure, **esos 2 recursos quedaron huérfanos**: existían de verdad en Azure pero Terraform nunca los registró en su state (se ve en el propio destroy log: ni el gateway ni el circuit aparecen listados para destruir). Se borraron a mano vía `az network vnet-gateway delete` / `az network express-route delete` - el gateway tarda 15-45 min en borrarse.
+4. El `destroy` normal además chocó con: (a) un lock de state stale del `apply` cortado (`terraform force-unlock` lo resolvió), y (b) `lifecycle.prevent_destroy = true` hardcodeado en `azurerm_virtual_network.this` dentro del módulo `azure-virtual-network` (no parametrizable desde el consumidor) - se resolvió editando temporalmente la copia cacheada en `.terraform/modules/azure_vnet/network.tf` (no el módulo real en GitHub) solo para permitir este destroy puntual.
+
+### Investigación del mecanismo real de Multicloud Interconnect (2026-09-16 mañana)
+
+Se investigó por qué falló el circuito clásico, revisando la doc oficial (`learn.microsoft.com/en-us/azure/multicloud-interconnect/overview`, fetchable, a diferencia del blog de `techcommunity.microsoft.com` que es una SPA y no se puede leer vía fetch):
+
+- La doc confirma que el mecanismo real SÍ pasa por un `ExpressRoute circuit`, pero seleccionando el **"Azure Multicloud Interconnect" port type** - no `service_provider_name = "AWS"` como se asumió. Se probó si "Azure Multicloud Interconnect" existe como nombre de proveedor clásico (`az network express-route list-service-providers`) - no aparece (solo "AWS" e "InterCloud for Azure", ninguno es el mecanismo real). El "port type" real probablemente vive en una api-version más nueva de `Microsoft.Network/expressRouteCircuits` (existen 2026-01-01 y 2026-03-01, más nuevas que la 2025-01-01 que usa `azurerm` 5.5.0) con campos que el provider estable todavía no expone - no confirmado, no se siguió investigando más por acuerdo con el usuario.
+- **Encontrado el proceso de acceso real**: la doc menciona explícitamente un formulario - `https://aka.ms/MCIForm` ("Multicloud Interconnect Form") - para pedir soporte/acceso a la preview. Combinado con que no existe NINGÚN resource provider "multicloud"/"interconnect" registrado en la suscripción (búsqueda exhaustiva con `az provider list`), esto confirma que es una preview con allow-list gestionada por Microsoft manualmente - no autoservicio, no resoluble por API/CLI/Terraform en esta sesión.
+
+### Decisión (2026-09-16, confirmada con el usuario)
+
+Se le presentaron 2 opciones: (a) avanzar ya con una VPN Site-to-Site (IPsec) clásica como alternativa funcional hoy mismo, o (b) pausar todo hasta tener acceso aprobado a la preview real. **El usuario eligió pausar.** No tocar `interconnect.tf` ni ninguna decisión de arquitectura de conectividad hasta que confirme que completó `aka.ms/MCIForm` y Microsoft aprobó el acceso - en ese punto, retomar directamente con el mecanismo real de Multicloud Interconnect (no con la VPN, que era el plan B solo para cuando no había alternativa).
+
 ## `terraform plan` real corrido (2026-09-15) - 122 to add, 0 errores
 
 Primer contacto real con las cuentas de AWS y Azure del usuario, a pedido explícito ("¿estamos listos para desplegar?" → eligió solo `plan`, no `apply`). Nada se creó - esto es de solo lectura.
