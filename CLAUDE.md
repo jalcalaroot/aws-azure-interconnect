@@ -44,7 +44,7 @@ The image is Azure Linux (`tdnf`, not `apk`); install `git` for the module downl
 
 ## CI
 
-`terraform-validate` (fmt, validate, tflint, checkov), `gitleaks` and `scorecard` need no secrets. `terraform-plan`/`terraform-apply` use OIDC (`ci_identities.tf`) and need repository variables (`AWS_ROLE_ARN_*`, `ARM_CLIENT_ID_*`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`, `AZURE_VM_SSH_PUBLIC_KEY`) that are not configured, so they fail at the credentials step without touching anything. **`terraform-apply` runs on every push to `main` that changes `*.tf`**: configure those variables only on purpose.
+`terraform-validate` (fmt, validate, tflint, checkov), `gitleaks` and `scorecard` need no secrets. `terraform-plan`/`terraform-apply` use OIDC (`ci_identities.tf`) and are skipped (`if: vars.AWS_ROLE_ARN_* != ''`) until the repository variables are set (`AWS_ROLE_ARN_*`, `ARM_CLIENT_ID_*`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`, `AZURE_VM_SSH_PUBLIC_KEY`). **Once set, `terraform-apply` runs on every push to `main` that changes `*.tf`**: configure them only on purpose.
 
 ## Open items
 

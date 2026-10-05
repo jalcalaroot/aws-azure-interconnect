@@ -21,7 +21,7 @@ concurrency:
 # Secrets and variables > Actions > Variables): environment config, not secrets.
 env:
   AWS_REGION: us-east-1
-  ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID_PLAN }} # client_id de aws-azure-interconnect-plan (ver ci_identities.tf)
+  ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID_PLAN }} # client_id of the aws-azure-interconnect-plan identity (see ci_identities.tf)
   ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
   ARM_USE_OIDC: true
@@ -31,6 +31,8 @@ env:
 jobs:
   plan:
     name: Plan
+    # Skipped (not failed) until the repository variables are configured.
+    if: ${{ vars.AWS_ROLE_ARN_PLAN != '' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -117,7 +119,7 @@ jobs:
             const warning = destroyCount > 0
               ? [
                   `> [!WARNING]`,
-                  `> Este plan **destruye o reemplaza ${destroyCount} recurso${destroyCount === 1 ? '' : 's'}**. Revisar con cuidado antes de mergear.`,
+                  `> This plan **destroys or replaces ${destroyCount} resource${destroyCount === 1 ? '' : 's'}**. Review carefully before merging.`,
                   '',
                 ]
               : [];
@@ -126,7 +128,7 @@ jobs:
               '### Terraform Plan',
               '',
               ...warning,
-              '<details><summary>Ver plan</summary>',
+              '<details><summary>Show plan</summary>',
               '',
               '```',
               truncated,

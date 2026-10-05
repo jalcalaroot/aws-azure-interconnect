@@ -130,6 +130,10 @@ Approximate, `us-east-1` / `eastus`, while the stack is up:
 
 Roughly **$0.4/h**, or about **$1.7/h** if AWS bills the 1 Gbps. The gateway keeps billing until destroyed.
 
+## CI
+
+`terraform-validate` (fmt, validate, tflint, Checkov), `gitleaks` and `scorecard` need no credentials and run on every PR. `terraform-plan` (PRs) and `terraform-apply` (push to `main`) authenticate with OIDC (`ci_identities.tf`) and are **skipped** until the repository variables `AWS_ROLE_ARN_AGENT`/`AWS_ROLE_ARN_PLAN`, `ARM_CLIENT_ID_AGENT`/`ARM_CLIENT_ID_PLAN`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID` and `AZURE_VM_SSH_PUBLIC_KEY` are set. Once they are, a push to `main` that changes `*.tf` runs a real `apply`.
+
 ## Teardown
 
 ```bash

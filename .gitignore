@@ -5,3 +5,8 @@
 *.tfplan
 destroy.log
 apply.log
+tfplan*
+*.bin
+.terraform.tfstate.lock.info
+crash.log
+backend.hcl
