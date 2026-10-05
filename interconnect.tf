@@ -1,34 +1,29 @@
 # ---------------------------------------------------------------------------
-# Fully Terraform-automated as of 2026-09-13 - no manual Portal/console step
-# left. Investigated in this order:
+# Rewritten 2026-10-05 after the 2026-09-16 failed apply. NOT yet applied -
+# this is the corrected design, unverified end-to-end until a real apply.
 #
 # AWS side: `hashicorp/aws` has no `aws_interconnect*` resource (confirmed).
 # `hashicorp/awscc` - generated directly from the same Cloud Control API
-# schema CloudFormation uses - already ships `awscc_interconnect_connection`
+# schema CloudFormation uses - ships `awscc_interconnect_connection`
 # (AWS Interconnect went GA in April 2026, CloudFormation got day-1 support,
 # awscc inherited it).
 #
-# Azure side: `azurerm` has no dedicated "Multicloud Interconnect" resource,
-# and the official guide (learn.microsoft.com/.../create-interconnect) only
-# documents Portal clicks. BUT: `az network express-route
-# list-service-providers` already lists "AWS" as a registered classic
-# ExpressRoute Service Provider, with peeringLocations
-# (australiaeast/germanywc/useast/uswest) matching the 4 Multicloud
-# Interconnect preview regions exactly - too specific to be a coincidence.
-# The "Multicloud Interconnect" Portal wizard is almost certainly a friendly
-# wrapper around this same classic mechanism. That means the circuit is just
-# an ordinary `azurerm_express_route_circuit` (long-supported, no gap) with
-# `service_provider_name = "AWS"` - and its `service_key` output is the
-# activation key AWS redeems below.
-#
-# Caveat, in the interest of not overclaiming: this is strong circumstantial
-# evidence (exact region-list match), not an executed end-to-end test - this
-# session was instructed not to touch real cloud accounts. Verify with a real
-# apply before trusting it blindly; if the classic-provider circuit turns out
-# NOT to carry the CSP-account verification the Multicloud Interconnect FAQ
-# describes, fall back to creating the circuit by hand in the Portal instead
-# (its resource ID would replace `azurerm_express_route_circuit.poc.id`
-# below) - see CLAUDE.md for that fallback path kept on record.
+# Azure side: Multicloud Interconnect is a regular
+# `Microsoft.Network/expressRouteCircuits` resource (API 2025-09-01) with
+# three differences from a classic provider circuit, which is why the first
+# attempt (azurerm circuit, `service_provider_name = "AWS"`, tier Standard)
+# ended in Failed/NotProvisioned with a placeholder service_key:
+#   1. sku.tier = "MultiCloud" (sku.name = "MultiCloud_MeteredData")
+#   2. properties.partnerAccountId = the AWS account that will redeem the key
+#   3. the key AWS redeems is properties.activationKey (base64 JSON), NOT
+#      serviceKey
+# On top of that, the old AWS side asked for 500Mbps while Azure asked for
+# 1000 - the activation key is validated against bandwidth, so they must
+# match (1Gbps is the only size in the preview).
+# `azurerm` 5.8 exposes none of this (tiers stop at Local/Standard/Premium,
+# no partnerAccountId/activationKey), hence `azapi` for the circuit only.
+# It is a public preview (since 2026-08-26), not allow-listed: the
+# aka.ms/MCIForm form is only for requesting extra regions.
 # ---------------------------------------------------------------------------
 
 # --- AWS side: Direct Connect Gateway + VPN Gateway + Interconnect ---------
@@ -54,39 +49,66 @@ resource "aws_dx_gateway_association" "poc" {
   allowed_prefixes      = [local.aws_vpc_cidr]
 }
 
-# Redeems the Azure circuit's service_key (see azurerm_express_route_circuit
+# Redeems the Azure circuit's activationKey (see azapi_resource.circuit
 # below) - the actual cross-cloud handshake, via the awscc (Cloud Control)
 # provider since hashicorp/aws doesn't have this resource yet.
 resource "awscc_interconnect_connection" "poc" {
   attach_point = {
     direct_connect_gateway = aws_dx_gateway.poc.id
   }
-  bandwidth      = "500Mbps" # free tier
-  activation_key = azurerm_express_route_circuit.poc.service_key
+  bandwidth      = "1Gbps" # must match the Azure circuit - the activation key is validated against it, and 1Gbps is the only preview size
+  activation_key = azapi_resource.circuit.output.properties.activationKey
 }
 
-# --- Azure side: ExpressRoute Circuit + Gateway + Connection --------------
-# `service_provider_name = "AWS"` / `peering_location = "useast"` - see the
-# top-of-file comment for why this classic-provider circuit is believed to
-# be the same object the Multicloud Interconnect Portal wizard creates.
+# --- Azure side: Multicloud Interconnect circuit + Gateway + Connection ----
 # `useast` (not `us-east-1`/`eastus`) is the peering-location spelling Azure
-# uses internally for this provider - confirmed via
-# `az network express-route list-service-providers`.
+# uses internally for the AWS provider - confirmed 2026-10-05 via
+# `az network express-route list-service-providers` (the only offer listed
+# is 1Gbps). See the top-of-file comment for why this is an azapi resource
+# and not azurerm_express_route_circuit.
 
-resource "azurerm_express_route_circuit" "poc" {
-  name                  = "erc-aws-azure-interconnect-poc"
-  resource_group_name   = azurerm_resource_group.this.name
-  location              = var.azure_location
-  service_provider_name = "AWS"
-  peering_location      = "useast"
-  bandwidth_in_mbps     = 1000 # only offer listed for this provider - see caveat above on the 500Mbps free tier being AWS-side only
+resource "azapi_resource" "circuit" {
+  type      = "Microsoft.Network/expressRouteCircuits@2025-09-01"
+  name      = "erc-aws-azure-interconnect-poc"
+  parent_id = azurerm_resource_group.this.id
+  location  = var.azure_location
 
-  sku {
-    tier   = "Standard"
-    family = "MeteredData"
+  # azapi 2.13.0 only embeds expressRouteCircuits schemas up to 2025-07-01;
+  # the MultiCloud tier / partnerAccountId / activationKey are documented in
+  # 2025-09-01 (Get MultiCloud ExpressRouteCircuit example). The body is sent
+  # as-is to ARM, so skip the local schema check for this one resource.
+  schema_validation_enabled = false
+
+  body = {
+    sku = {
+      name   = "MultiCloud_MeteredData"
+      tier   = "MultiCloud"
+      family = "MeteredData"
+    }
+    properties = {
+      serviceProviderProperties = {
+        serviceProviderName = "AWS"
+        peeringLocation     = "useast"
+        bandwidthInMbps     = 1000
+      }
+      partnerAccountId = data.aws_caller_identity.current.account_id
+    }
   }
 
   tags = local.tags
+
+  # activationKey is generated by Azure; whether it is populated right when
+  # the PUT returns or shows up async is unverified - if the first apply
+  # reads it back empty, re-read via a data source before the awscc side.
+  response_export_values = [
+    "properties.activationKey",
+    "properties.serviceProviderProvisioningState",
+  ]
+
+  timeouts {
+    create = "30m"
+    delete = "30m"
+  }
 }
 
 # Azure Multicloud Interconnect's own FAQ: "Do I need an ExpressRoute
@@ -120,7 +142,7 @@ resource "azurerm_virtual_network_gateway_connection" "poc" {
   resource_group_name        = azurerm_resource_group.this.name
   type                       = "ExpressRoute"
   virtual_network_gateway_id = azurerm_virtual_network_gateway.poc.id
-  express_route_circuit_id   = azurerm_express_route_circuit.poc.id
+  express_route_circuit_id   = azapi_resource.circuit.id
 
   tags = local.tags
 }

@@ -1,11 +1,8 @@
-# Backend remoto real: mismo bucket S3 de tfstate que jalcalaroot-aws-bootstrap
-# y aws-vpc/aws-eks-cluster, key propia para no pisar esos states. Necesario
-# para que GitHub Actions (runners efímeros, sin disco persistente) pueda
-# encadenar plan/apply entre corridas - sin esto, cada run de CI arrancaría
-# de cero sin memoria del state anterior. Locking nativo de S3
-# (use_lockfile, TF >= 1.10) - sin DynamoDB. El bucket embebe el account ID
-# en su nombre - Terraform no permite variables/interpolación dentro de un
-# bloque `backend`, así que esto no se puede parametrizar.
+# Remote backend: same S3 state bucket as jalcalaroot-aws-bootstrap and the
+# other repos, with its own key. Needed so GitHub Actions (ephemeral runners)
+# can chain plan/apply across runs. Native S3 locking (use_lockfile,
+# Terraform >= 1.10), no DynamoDB. The bucket name embeds the account ID;
+# Terraform does not allow variables inside a `backend` block.
 terraform {
   backend "s3" {
     bucket       = "jalcalaroot-tfstate-740104998573"

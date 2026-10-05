@@ -1,23 +1,15 @@
-# Identidades de CI para GitHub Actions - sin ningún secreto de AWS ni de
-# Azure almacenado en GitHub, mismo patrón que aws-eks-cluster/
-# azure-aks-cluster: "agent" (apply, push a main) y "plan" (solo lectura,
-# PRs), RBAC acotado lo más posible por recurso/nombre.
+# CI identities for GitHub Actions - no AWS or Azure secret stored in GitHub.
+# Same pattern as aws-eks-cluster / azure-aks-cluster: "agent" (apply, push
+# to main) and "plan" (read-only, PRs), RBAC scoped as tightly as possible.
 #
-# El sub claim usa el sub_claim_prefix personalizado de esta cuenta de
-# GitHub (formato "repo:OWNER@OWNER_ID/REPO@REPO_ID:...", NO el subject
-# inmutable default) - confirmado para este repo específico vía
-# `gh api repos/jalcalaroot/aws-azure-interconnect/actions/oidc/customization/sub`
-# el 2026-09-15: "repo:jalcalaroot@22682982/aws-azure-interconnect@1368438534".
+# The OIDC `sub` claim uses this GitHub account's custom sub_claim_prefix
+# ("repo:OWNER@OWNER_ID/REPO@REPO_ID:..."), not the default immutable
+# subject (see `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`).
 #
-# Borrador razonable, no el resultado de "generar con IAM Policy Autopilot
-# desde el plan real + recortar a mano" (mismo estado que ci_identities.tf
-# tenía en aws-eks-cluster el día 1, según su propio comentario) - conviene
-# repetir ese proceso contra el primer plan real de CI antes de confiar en
-# esto a largo plazo. Puntual: la acción exacta de IAM para el servicio
-# "Interconnect" (`interconnect:*` acá) no está confirmada contra ninguna
-# policy oficial de AWS - inferida del namespace de CloudFormation
-# (`AWS::Interconnect::Connection`), que casi siempre coincide con el
-# prefijo de IAM action, pero no verificada 1:1.
+# Day-1 draft: the IAM policies are not yet trimmed with IAM Policy Autopilot
+# against a real CI plan. In particular, `interconnect:*` is inferred from the
+# CloudFormation namespace (`AWS::Interconnect::Connection`), not from an
+# official AWS policy.
 
 data "aws_caller_identity" "current" {}
 
@@ -25,7 +17,7 @@ locals {
   github_repo_subject_prefix = "repo:jalcalaroot@22682982/aws-azure-interconnect@1368438534"
 }
 
-# --- AWS: roles IAM vía OIDC -------------------------------------------------
+# --- AWS: IAM roles via OIDC -------------------------------------------------
 
 data "aws_iam_policy_document" "ci_agent_assume_role" {
   statement {
@@ -69,7 +61,7 @@ resource "aws_iam_role" "ci_agent" {
 }
 
 data "aws_iam_policy_document" "ci_plan_assume_role" {
-  #checkov:skip=CKV_AWS_358:el trust policy ya exige `aud=sts.amazonaws.com` Y un `sub` exacto (sin wildcard) con el owner/repo/id reales - la config más restrictiva posible según la guía de GitHub para OIDC con AWS. Mismo patrón exacto que aws-eks-cluster/ci_identities.tf (que no lo tiene skippeado, probablemente por diferencia de versión del scanner) - no hay ningún claim inseguro acá, es un statement Federated único sin alternativa "AWS" principal que lo vuelva ambiguo.
+  #checkov:skip=CKV_AWS_358:the trust policy requires `aud=sts.amazonaws.com` AND an exact `sub` (no wildcard) with the real owner/repo/ids - the most restrictive setup per GitHub's OIDC-for-AWS guidance; a single Federated statement with no ambiguous "AWS" principal
   statement {
     sid     = "GitHubActionsPullRequest"
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -100,13 +92,13 @@ resource "aws_iam_role" "ci_plan" {
   tags                 = local.tags
 }
 
-# --- AWS: permisos del agent (apply) ----------------------------------------
+# --- AWS: agent permissions (apply) -----------------------------------------
 
 data "aws_iam_policy_document" "ci_agent_permissions" {
-  #checkov:skip=CKV_AWS_356:Resource "*" limitado a Describe/List de EC2/DX/Interconnect (AWS no permite scopearlas a nivel de recurso) o a iam:PassRole acotado por condición iam:PassedToService - ver statements individuales
-  #checkov:skip=CKV_AWS_111:`ec2:*`/`directconnect:*`/`interconnect:*` son un borrador de día 1 a propósito (mismo estado inicial que aws-eks-cluster/ci_identities.tf tenía con sus actions puntuales) - se van a acotar a la lista real de acciones con el IAM Policy Autopilot corriendo contra el primer plan real de CI (ver terraform-plan.yml), no antes de tener ese dato real
-  #checkov:skip=CKV_AWS_109:mismo motivo que CKV_AWS_111 - los comodines de servicio completo se van a recortar con el Policy Autopilot, no a mano por adivinanza
-  #checkov:skip=CKV_AWS_107:ninguno de los 3 wildcards de servicio (ec2/directconnect/interconnect) incluye una acción real de exposición de credenciales (no hay iam:CreateAccessKey ni similar en estos 3 namespaces) - falso positivo del scanner tratando el wildcard de servicio como si fuera acceso a IAM
+  #checkov:skip=CKV_AWS_356:Resource "*" is limited to Describe/List on EC2/DX/Interconnect (not resource-scopable in AWS) or iam:PassRole constrained by iam:PassedToService - see the individual statements
+  #checkov:skip=CKV_AWS_111:`ec2:*`/`directconnect:*`/`interconnect:*` are a day-1 draft on purpose; they will be narrowed to the real action list with IAM Policy Autopilot against the first real CI plan (see terraform-plan.yml)
+  #checkov:skip=CKV_AWS_109:same reason as CKV_AWS_111 - service-wide wildcards will be trimmed with IAM Policy Autopilot, not by guesswork
+  #checkov:skip=CKV_AWS_107:none of the 3 service wildcards (ec2/directconnect/interconnect) includes a credential-exposing action (no iam:CreateAccessKey or similar); false positive from treating a service wildcard as IAM access
   statement {
     sid       = "Ec2Lifecycle"
     actions   = ["ec2:*"]
@@ -119,7 +111,7 @@ data "aws_iam_policy_document" "ci_agent_permissions" {
     resources = ["*"]
   }
 
-  # Namespace inferido, no confirmado - ver comentario al inicio del archivo.
+  # Inferred namespace, not confirmed - see the comment at the top of the file.
   statement {
     sid       = "InterconnectLifecycle"
     actions   = ["interconnect:*"]
@@ -171,8 +163,7 @@ data "aws_iam_policy_document" "ci_agent_permissions" {
     }
   }
 
-  # Backend remoto - state + lock file nativo de S3, scoped al key de este
-  # proyecto, mismo patrón que ci_agent_permissions de aws-eks-cluster.
+  # Remote backend - S3 state + native lock file, scoped to this project's key.
   statement {
     sid       = "TerraformStateBackendAccess"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
@@ -203,7 +194,7 @@ data "aws_iam_policy_document" "ci_agent_permissions" {
     }
   }
 
-  # --- Guardrails, mismos que aws-eks-cluster/ci_identities.tf ---
+  # --- Guardrails, same as aws-eks-cluster/ci_identities.tf ---
   statement {
     sid    = "DenyPrivilegeEscalation"
     effect = "Deny"
@@ -239,11 +230,11 @@ resource "aws_iam_role_policy" "ci_agent_permissions" {
   policy = data.aws_iam_policy_document.ci_agent_permissions.json
 }
 
-# --- AWS: permisos del plan role (solo lectura) -----------------------------
+# --- AWS: plan role permissions (read-only) ---------------------------------
 
 data "aws_iam_policy_document" "ci_plan_permissions" {
-  #checkov:skip=CKV_AWS_356:Resource "*" son Describe/List de EC2/DX/Interconnect (AWS no permite scopearlos a nivel de recurso) o kms:Decrypt/GenerateDataKey acotado por condición kms:ViaService
-  #checkov:skip=CKV_AWS_107:falso positivo - todas las acciones son de solo lectura (Describe/Get/List), ninguna expone ni genera credenciales; el scanner marca el wildcard de servicio en `ec2:Describe*`/`interconnect:Get*` como si fuera acceso a IAM
+  #checkov:skip=CKV_AWS_356:Resource "*" is Describe/List on EC2/DX/Interconnect (not resource-scopable in AWS) or kms:Decrypt/GenerateDataKey limited by kms:ViaService
+  #checkov:skip=CKV_AWS_107:false positive - all actions are read-only (Describe/Get/List); the scanner treats the `ec2:Describe*`/`interconnect:Get*` service wildcard as IAM access
   statement {
     sid = "ReadOnly"
 
@@ -320,7 +311,7 @@ resource "aws_iam_role_policy" "ci_plan_permissions" {
   policy = data.aws_iam_policy_document.ci_plan_permissions.json
 }
 
-# --- Azure: identidades vía Workload Identity Federation --------------------
+# --- Azure: identities via Workload Identity Federation ---------------------
 
 data "azurerm_storage_account" "tfstate" {
   name                = "sttfstatejalcalaroot"
@@ -357,7 +348,7 @@ resource "azurerm_federated_identity_credential" "ci_plan_pr" {
   subject                   = "${local.github_repo_subject_prefix}:pull_request"
 }
 
-# RBAC acotado al resource group de este PoC, no a la suscripción entera.
+# RBAC scoped to this PoC's resource group, not the whole subscription.
 resource "azurerm_role_assignment" "ci_agent_rg_contributor" {
   scope                = azurerm_resource_group.this.id
   role_definition_name = "Contributor"
@@ -370,9 +361,8 @@ resource "azurerm_role_assignment" "ci_plan_rg_reader" {
   principal_id         = azurerm_user_assigned_identity.ci_plan.principal_id
 }
 
-# Backend remoto: Storage Blob Data Contributor (data plane, lease de
-# locking) + Reader (management plane) - mismo gap ya documentado en
-# azure-aks-cluster/ci_identities.tf.
+# Remote state: Storage Blob Data Contributor (data plane, lease for locking)
+# + Reader (management plane) - same gap documented in azure-aks-cluster.
 resource "azurerm_role_assignment" "ci_agent_state_write" {
   scope                = data.azurerm_storage_account.tfstate.id
   role_definition_name = "Storage Blob Data Contributor"
