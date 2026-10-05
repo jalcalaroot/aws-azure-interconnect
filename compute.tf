@@ -149,7 +149,7 @@ locals {
       apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nginx telnet python3 iputils-ping curl net-tools dnsutils traceroute && break
       sleep 10
     done
-    echo "hello world desde __CLOUD__ ($(hostname -I | awk '{print $1}'))" > /var/www/html/index.html
+    echo "hello world from __CLOUD__ ($(hostname -I | awk '{print $1}'))" > /var/www/html/index.html
     systemctl enable --now nginx
     cd /var/www/html
     nohup python3 -m http.server 443 > /dev/null 2>&1 &

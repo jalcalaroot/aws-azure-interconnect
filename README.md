@@ -96,7 +96,7 @@ aws ssm start-session --region us-east-1 --target <instance-id>
 ping -c 5 <azure-ip>
 telnet <azure-ip> 22      # SSH banner (exit: Ctrl+] then quit)
 telnet <azure-ip> 80      # type: GET / HTTP/1.0  + Enter twice -> 200 OK, hello world
-curl http://<azure-ip>    # "hello world desde Azure (<ip>)"
+curl http://<azure-ip>    # "hello world from Azure (<ip>)"
 ```
 
 **Azure to AWS**:
