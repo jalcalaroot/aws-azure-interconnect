@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # gitleaks-action comenta hallazgos en el PR
+  pull-requests: write # gitleaks-action comments findings on the PR
 
 jobs:
   scan:
