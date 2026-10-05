@@ -2,9 +2,9 @@ name: Scorecard analysis workflow
 
 on:
   push:
-    branches: [main] # solo la rama default está soportada
+    branches: [main] # only the default branch is supported
   schedule:
-    - cron: "30 1 * * 6" # sábados 01:30 UTC
+    - cron: "30 1 * * 6" # Saturdays 01:30 UTC
   workflow_dispatch:
 
 permissions: read-all
@@ -14,8 +14,8 @@ jobs:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
-      security-events: write # subir a la pestaña Security
-      id-token: write # requerido por publish_results: true
+      security-events: write # upload to the Security tab
+      id-token: write # required by publish_results: true
 
     steps:
       - name: Checkout

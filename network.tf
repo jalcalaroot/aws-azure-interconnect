@@ -44,6 +44,15 @@ module "azure_vnet" {
   vnet_address_space  = [local.azure_vnet_cidr]
   tags                = local.tags
 
+  # The module's default names for these 3 resources are globally unique
+  # *and already taken* by the azure-virtual-network project's own
+  # deployment (RG `jalcalaroot`) - `terraform plan` can't see global-name
+  # collisions, the first apply of 2026-10-05 failed with
+  # StorageAccountAlreadyExists / VaultAlreadyExists. PoC-specific names.
+  storage_account_name           = "sticpocdatajalcala"
+  flow_logs_storage_account_name = "sticpocflowjalcala"
+  key_vault_name                 = "kv-icpoc-jalcala"
+
   # The module's own subnet CIDR defaults (public/app/data/aks/appgw/
   # privatelink) all fall inside 10.0.0.0/16 - the module's *own* default
   # vnet_address_space. Since this VNet uses 10.200.0.0/16 instead, every

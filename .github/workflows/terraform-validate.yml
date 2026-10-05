@@ -13,7 +13,7 @@ on:
 
 permissions:
   contents: read
-  security-events: write # subir el SARIF de Checkov a la pestaña Security
+  security-events: write # upload the Checkov SARIF to the Security tab
 
 jobs:
   validate:
@@ -43,10 +43,9 @@ jobs:
 
       - name: tflint
         env:
-          # sin esto, tflint --init pega contra la API pública de GitHub sin
-          # autenticar (60 req/hora por IP, compartida entre todos los runners
-          # de GitHub Actions) para bajar los plugins de aws/azurerm - rate
-          # limit real, no hipotético (ver aws-vpc/azure-virtual-network).
+          # without this, `tflint --init` hits the GitHub API unauthenticated
+          # (60 req/h per IP, shared by all runners) to download the plugins,
+          # and gets rate-limited.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           tflint --init
@@ -59,14 +58,14 @@ jobs:
           directory: .
           framework: terraform
           quiet: true
-          soft_fail: false # bloqueante — findings aceptados quedan documentados con #checkov:skip inline
+          soft_fail: false # blocking - accepted findings are documented inline with #checkov:skip
           output_format: cli,sarif
           output_file_path: console,results.sarif
 
-      - name: Subir resultados de Checkov a la pestaña Security
-        # correr también cuando Checkov falla (soft_fail: false) - ahí es
-        # cuando más importa que quede el SARIF. Pero NO si un paso anterior
-        # (tflint, validate) ya falló y Checkov ni llegó a correr.
+      - name: Upload Checkov results to the Security tab
+        # also run when Checkov fails (that is when the SARIF matters most),
+        # but not if an earlier step (tflint, validate) failed and Checkov
+        # never ran.
         if: always() && steps.checkov.outcome != 'skipped'
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
