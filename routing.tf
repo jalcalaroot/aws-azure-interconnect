@@ -1,35 +1,18 @@
 # ---------------------------------------------------------------------------
-# Gaps de networking reales, encontrados leyendo el código fuente de
-# aws-vpc/azure-virtual-network (no asumidos) - ninguno de los security
-# groups/NSG alcanza si estas 2 cosas no están:
+# AWS routing for the Azure CIDR. Security groups alone are not enough:
 #
-# 1. Route table de la subnet compute: el módulo aws-vpc solo le pone
-#    0.0.0.0/0 -> NAT Gateway (route_tables.tf). Sin una ruta explícita a
-#    10.200.0.0/16 por el VPN Gateway, el tráfico hacia Azure saldría por
-#    el NAT (a la IP pública, no por el Interconnect) o ni saldría.
+# 1. The `compute` route table (from aws-vpc) only has 0.0.0.0/0 -> NAT.
+#    Without a route for 10.200.0.0/16 via the VGW, Azure-bound traffic
+#    would leave through the NAT instead of the interconnect.
+# 2. The `private` NACL only allows intra-VPC traffic (10.100.0.0/16) and
+#    has no ephemeral-port egress. NACLs are stateless and evaluated before
+#    security groups, so traffic to/from 10.200.0.0/16 is dropped, and
+#    replies to connections started from Azure (e.g. SYN-ACK from :80)
+#    cannot leave.
 #
-# 2. NACL "private" (compartida por compute+data): su única regla amplia es
-#    "todo el tráfico, pero solo si el origen/destino es 10.100.0.0/16" -
-#    o sea, tráfico intra-VPC. Todo lo que cruza a 10.200.0.0/16 no matchea
-#    ninguna regla y cae en el deny implícito, sin importar lo que diga el
-#    Security Group (la NACL es stateless y se evalúa antes, a nivel de
-#    subnet - un ALLOW en el SG no compensa un DENY en la NACL).
-#    Puntual: la NACL "private" no tiene NINGUNA regla egress de puertos
-#    efímeros (1024-65535) hacia afuera - el módulo la diseñó para
-#    instancias que solo INICIAN conexiones salientes (a internet vía NAT),
-#    no para recibir conexiones entrantes desde fuera de la VPC. Sin esa
-#    regla, la respuesta a una conexión que Azure inicia hacia nuestra
-#    instancia (SYN-ACK desde el puerto 80/443/8080 hacia el puerto
-#    efímero de Azure) queda bloqueada de salida.
-#
-# El módulo azure-virtual-network, del otro lado, no tiene este problema:
-# su route table "rt-app" ya tiene bgp_route_propagation_enabled = true
-# (route_tables.tf), así que la ruta a 10.100.0.0/16 se aprende sola por
-# BGP en cuanto el circuito conecta. Y su NSG de subnet ("nsg-private")
-# permite todo el tráfico Inbound/Outbound con origen/destino "VirtualNetwork"
-# - un service tag de Azure que, por diseño, incluye las redes conectadas
-# vía ExpressRoute/gateway, no solo la VNet local. No hace falta tocar nada
-# ahí.
+# Azure needs nothing extra: its app route table propagates BGP routes, and
+# the `VirtualNetwork` service tag in the subnet NSG includes networks
+# connected through ExpressRoute.
 # ---------------------------------------------------------------------------
 
 data "aws_route_table" "compute" {
@@ -48,10 +31,10 @@ resource "aws_route" "compute_to_azure" {
   gateway_id             = aws_vpn_gateway.poc.id
 }
 
-# --- NACL: agregar lo que falta para 10.200.0.0/16, sin tocar lo existente -
+# --- NACL: allow the Azure CIDR without touching the module's own rules ----
 
 resource "aws_network_acl_rule" "private_in_icmp_from_azure" {
-  #checkov:skip=CKV_AWS_352:falso positivo - ICMP no tiene puertos, Checkov interpreta from_port/to_port sin setear como "todos los puertos"; mismo patrón que los #checkov:skip ya documentados en aws-vpc/nacl.tf
+  #checkov:skip=CKV_AWS_352:false positive - ICMP has no ports; Checkov treats unset from_port/to_port as "all ports" (same skip as aws-vpc/nacl.tf)
   network_acl_id = module.aws_vpc.private_network_acl_id
   rule_number    = 200
   egress         = false
@@ -161,9 +144,8 @@ resource "aws_network_acl_rule" "private_out_8080_to_azure" {
   to_port        = 8080
 }
 
-# La regla que de verdad faltaba: sin esto, la NACL nunca deja salir la
-# respuesta (SYN-ACK, etc.) de una conexión que Azure inició hacia nosotros
-# - el módulo nunca previó tráfico entrante desde fuera de la VPC.
+# Missing in the module: without ephemeral-port egress the NACL drops replies
+# (SYN-ACK, etc.) to connections initiated from Azure.
 resource "aws_network_acl_rule" "private_out_ephemeral_to_azure" {
   network_acl_id = module.aws_vpc.private_network_acl_id
   rule_number    = 220

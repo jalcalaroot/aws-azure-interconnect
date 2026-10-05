@@ -1,9 +1,7 @@
-# Instalar: pip install pre-commit && pre-commit install (una vez por clon)
-# Corre en cada `git commit`, antes de que el commit exista - un secreto
-# nunca llega a salir de la máquina, a diferencia de gitleaks en CI (que lo
-# atrapa recién cuando ya está en GitHub). terraform_fmt es gratis agregar
-# acá: instantáneo, evita el ida-y-vuelta de que el fmt-check de CI rebote
-# el PR por indentación.
+# Install: pip install pre-commit && pre-commit install (once per clone)
+# Runs on every `git commit`, before the commit exists, so a secret never
+# leaves the machine (unlike gitleaks in CI, which only catches it once it is
+# on GitHub). terraform_fmt is free here and avoids CI fmt-check bounces.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
