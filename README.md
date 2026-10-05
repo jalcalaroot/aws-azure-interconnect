@@ -1,117 +1,154 @@
 # aws-azure-interconnect
 
-PoC de conectividad privada entre AWS y Azure usando **AWS Interconnect** (GA desde abril 2026) y su contraparte **Azure Multicloud Interconnect** (preview). Región elegida: **us-east-1 ↔ East US** - el único par válido entre las 4 regiones del preview que incluye N. Virginia.
+Terraform PoC for private, cloud-to-cloud connectivity between **AWS** (us-east-1) and **Azure** (East US) using **AWS Interconnect - multicloud** and **Azure Multicloud Interconnect** (public preview). No VPN, no public internet, no manual portal steps.
 
-## ⏸️ Estado: PAUSADO (2026-09-16), esperando acceso de Microsoft
+Verified end-to-end: two Ubuntu hosts, one per cloud, reach each other over private IPs (ping, TCP 22/80, HTTP).
 
-**Se probó de verdad y el circuito de Azure (`azurerm_express_route_circuit` con `service_provider_name = "AWS"`) falló** - quedó en `Failed`/`NotProvisioned`, con un `service_key` placeholder (no uno real). El match de regiones que hacía pensar que este circuito "clásico" era el mecanismo real de Multicloud Interconnect resultó ser una coincidencia, no el camino correcto - ver `CLAUDE.md` para el detalle completo de la investigación.
-
-Azure Multicloud Interconnect es una preview con **allow-list gestionado por Microsoft** (confirmado: cero resource providers "multicloud"/"interconnect" registrados en la suscripción). El acceso se pide en **[aka.ms/MCIForm](https://aka.ms/MCIForm)** - ya se envió el formulario, pendiente de aprobación. Todo lo que se había desplegado como prueba ya se destruyó (confirmado en ambas cuentas, cero costo corriendo). **No hay nada aplicado hoy, y no se va a tocar `interconnect.tf` hasta tener acceso aprobado.**
-
-Todo lo de abajo (arquitectura, tabla de "qué maneja Terraform", costos) describe el **diseño tal como está escrito en el código**, no algo confirmado funcionando end-to-end - tratalo como la base para retomar una vez aprobado el acceso, no como una demo lista.
-
-## Arquitectura
+## Architecture
 
 ```mermaid
 flowchart LR
     subgraph AWS["AWS · us-east-1 · VPC 10.100.0.0/16"]
-        ec2["Ubuntu 24.04 t3.micro\ncompute subnet\nping/curl/traceroute\n(SSM, sin SSH)"]
-        rtaws["Route table (compute)\n0.0.0.0/0 -> NAT\n10.200.0.0/16 -> VGW"]
-        dxgw["DX Gateway + VGW"]
-        conn["awscc_interconnect_connection"]
-        ec2 --- rtaws --- dxgw --- conn
+        ec2["EC2 t3.micro\nnginx :80 · sshd :22\n(SSM only)"]
+        vgw["Route 10.200.0.0/16 -> VGW\nVGW + DX Gateway"]
+        conn["awscc_interconnect_connection\n1 Gbps"]
+        ec2 --- vgw --- conn
     end
-
     subgraph Azure["Azure · East US · VNet 10.200.0.0/16"]
-        vm["Ubuntu 24.04 Standard_B1ls\napp subnet\nping/curl/traceroute\n(Run Command, sin RDP/SSH)"]
-        rtazure["Route table (app)\nBGP-learned desde el circuito\n10.100.0.0/16 -> ExpressRoute GW"]
-        ergw["ExpressRoute Gateway"]
-        circuit["azurerm_express_route_circuit\nservice_provider_name = AWS"]
-        vm --- rtazure --- ergw --- circuit
+        vm["VM Standard_F1als_v7\nnginx :80 · sshd :22\n(Run Command only)"]
+        ergw["ExpressRoute gateway\n(BGP-learned 10.100.0.0/16)"]
+        circuit["azapi_resource\nexpressRouteCircuits · tier MultiCloud"]
+        vm --- ergw --- circuit
     end
-
-    conn <-->|"service_key del circuito\n= activation_key de la conexión\n(referencia directa entre recursos)"| circuit
+    conn <-->|"activation key"| circuit
 ```
 
-Las dos instancias son **Ubuntu 24.04 LTS** en ambos lados (mismo SO en las dos nubes a propósito - si falla un ping/curl, es la red, no una diferencia de herramientas), con `iputils-ping`/`curl`/`net-tools`/`dnsutils`/`traceroute` instalados vía `apt`. Ninguna tiene un puerto de administración abierto (ni SSH ni RDP) - se gestionan por SSM (AWS) y Run Command (Azure), la misma decisión de "sin bastion" ya tomada en el trabajo de EKS/AKS: estas 2 instancias **son** el "bastion" pedido, solo que sin acceso interactivo. Tráfico permitido entre ambas nubes: **ICMP, HTTP (80), HTTPS (443 - sin certificado real todavía, mismo echo plano) y 8080**.
-
-El ruteo entre las dos redes lo resuelve el circuito/BGP automáticamente (ninguna de las dos FAQs pide configurar rutas a mano) - la tabla de rutas de cada subnet ya enruta hacia el gateway local, y el gateway aprende por BGP el CIDR de la otra nube a través del Interconnect.
-
-## Qué maneja Terraform - y por qué ya no hay ningún paso manual
-
-Investigado a fondo el 2026-09-13 (no solo "¿existe el resource?", sino "¿se puede automatizar de verdad, sin depender del Portal?"):
-
-**Lado AWS: resuelto con `hashicorp/awscc`, no con `hashicorp/aws`.** `hashicorp/aws` 6.64.0 no tiene ningún recurso `aws_interconnect*` (confirmado contra el registro de Terraform). Pero AWS Interconnect pasó a **GA en abril 2026** y CloudFormation recibió soporte el día 1 (`AWS::Interconnect::Connection`) - y **`hashicorp/awscc`** (el provider "Cloud Control", generado automáticamente del mismo schema que usa CloudFormation) **ya tiene `awscc_interconnect_connection`** con el schema completo. Este repo usa `aws` para todo lo demás y `awscc` puntualmente para este recurso - patrón normal, no un hack.
-
-**Lado Azure: la Portal wizard "Multicloud Interconnect" resultó ser un wrapper de algo que ya existe.** La búsqueda inicial de una feature nueva llamada "Multicloud Interconnect" no encontró nada automatizable (ni CLI extension real - se probaron y descartaron `interconnect` y `multicloud-connector`, ninguna tiene que ver -, ni ARM/Bicep, ni REST spec). Pero `az network express-route list-service-providers` **ya lista "AWS" como Service Provider clásico de ExpressRoute**, con `peeringLocations: [australiaeast, germanywc, useast, uswest]` - las 4 regiones del preview, exactas, no una coincidencia. Eso significa que el circuito no es más que un `azurerm_express_route_circuit` de toda la vida (recurso viejo, sin ningún gap) con `service_provider_name = "AWS"` - y su atributo `service_key` es la activation key que el lado AWS necesita. Cero pasos de Portal.
-
-⚠️ **Actualización (2026-09-16): esto se probó de verdad y falló.** El circuito se creó pero quedó en `provisioningState: Failed`, `serviceProviderProvisioningState: NotProvisioned`, con un `service_key` placeholder (`00000000-0000-0000-0000-000000000000`), no uno real. El match de regiones no era el mecanismo real - Azure Multicloud Interconnect necesita acceso aprobado por Microsoft (`aka.ms/MCIForm`), no hay atajo por API/CLI/Terraform. Ver la sección de estado al principio del archivo y `CLAUDE.md` para el detalle completo, incluida la investigación de por qué falló y qué se encontró (`service_provider_name` no es lo mismo que el "port type" que pide la doc oficial).
-
-| Recurso | Terraform |
-|---|---|
-| VPC + VNet (reusando `aws-vpc` y `azure-virtual-network`) | ✅ |
-| DX Gateway + VPN Gateway (AWS) | ✅ |
-| `awscc_interconnect_connection` (AWS, redime la key) | ✅ |
-| `azurerm_express_route_circuit` (Azure, genera la key) | ✅ |
-| ExpressRoute Virtual Network Gateway + Connection (Azure) | ✅ |
-| Las 2 instancias de prueba (EC2 + VM) | ✅ |
-| Ruteo + NACL para que las 2 redes se vean (`routing.tf`) | ✅ |
-
-## Networking: qué hace falta además de los Security Groups/NSG
-
-Revisado el 2026-09-14 leyendo el código fuente real de `aws-vpc`/`azure-virtual-network` (no asumido) - un Security Group/NSG permisivo **no alcanza solo** para que el tráfico cruce entre las 2 nubes. Se encontraron 2 gaps reales del lado AWS:
-
-1. **La route table de la subnet `compute`** (creada por el módulo `aws-vpc`) solo tiene `0.0.0.0/0 → NAT Gateway` - sin una ruta explícita a `10.200.0.0/16` por el VPN Gateway, el tráfico hacia Azure saldría por el NAT (a una IP pública) o no saldría. `routing.tf` agrega esa ruta vía `data.aws_route_table` (por `subnet_id`, sin depender de tags) + `aws_route`.
-2. **La NACL "private"** (compartida por `compute`+`data`) solo permite tráfico intra-VPC (`10.100.0.0/16`) - todo lo que cruza a `10.200.0.0/16` cae en el deny implícito sin importar lo que diga el Security Group (la NACL es *stateless* y se evalúa antes, a nivel de subnet). Punto más sutil: la NACL tampoco tenía **ninguna regla egress de puertos efímeros** hacia afuera - el módulo la diseñó para instancias que solo *inician* conexiones salientes, no para recibir conexiones entrantes desde fuera de la VPC. Sin esa regla, la respuesta a una conexión que Azure inicia hacia nosotros queda bloqueada de salida aunque la conexión entrante sí se haya permitido. `routing.tf` agrega las reglas de ICMP/80/443/8080 en ambos sentidos, más la regla de puertos efímeros de salida que faltaba.
-
-**Del lado Azure no hizo falta tocar nada** - `azure-virtual-network`'s `rt-app` ya tiene `bgp_route_propagation_enabled = true` (la ruta a `10.100.0.0/16` se aprende sola por BGP en cuanto conecta el circuito), y su NSG de subnet permite todo el tráfico Inbound/Outbound con origen/destino el service tag `VirtualNetwork` - que por diseño de Azure incluye las redes conectadas vía ExpressRoute, no solo la VNet local.
-
-## Costos (confirmados vía las APIs de precios públicas de cada nube, 2026-09-13)
-
-| Recurso | Costo | Notas |
+| Layer | Resources | Provider |
 |---|---|---|
-| AWS Interconnect | **Gratis hasta 500 Mbps** (Tier 1, uno por región/proveedor) | El circuito de Azure solo ofrece 1 Gbps como opción (`bandwidthsOffered`) - a confirmar si igual cae en el tier gratuito del lado AWS o si al ser 1 Gbps ya no aplica |
-| Azure Multicloud Interconnect / circuito AWS | **Gratis durante el preview** | Precio de GA no anunciado todavía |
-| DX Gateway (AWS) | Gratis | Objeto lógico, sin cargo por hora |
-| VPN Gateway (AWS, `aws_vpn_gateway`) | **Gratis** | Confirmado contra el price list público de `AmazonVPC` (`pricing.us-east-1.amazonaws.com`) - el Virtual Private Gateway en sí no tiene cargo por hora. Solo se factura si además se crea una `aws_vpn_connection` (IPsec, $0.05/hora) - este repo no crea ninguna, el VGW acá solo sirve de punto de asociación del DX Gateway |
-| ExpressRoute Virtual Network Gateway (Azure), SKU `Standard` | **$0.19/hora ≈ $138.70/mes** (730 hs) | Confirmado contra la Azure Retail Prices API (`prices.azure.com`) para `eastus`. **El recurso más caro y más lento de este PoC** - tarda 30-60 min en aprovisionarse y sigue facturando por hora hasta que se borra. Otros SKUs en la misma región: HighPerformance $0.49/h, ErGw1AZ $0.361/h, ErGw2AZ $0.632/h, ErGw3AZ $2.151/h, UltraPerformance $1.87/h - `Standard` es el más barato que soporta `type = "ExpressRoute"` |
-| NAT Gateway regional (AWS, vía módulo `aws-vpc`) | ~$0.045/hora × 1 AZ (`az_count = 1` a propósito) | Igual que en `aws-vpc`, nada de esto es gratis por defecto |
-| EC2 `t3.micro` + VM `Standard_B1ls` | Centavos/hora cada una | Las instancias más baratas que sirven para el test |
+| AWS network | VPC, DX Gateway, VGW, route + NACL rules for `10.200.0.0/16` | `aws` |
+| AWS interconnect | `awscc_interconnect_connection` (redeems the activation key) | `awscc` |
+| Azure network | VNet, `GatewaySubnet`, ExpressRoute gateway + connection | `azurerm` |
+| Azure interconnect | ExpressRoute circuit, tier `MultiCloud` (generates the key) | `azapi` |
+| Test hosts | Ubuntu 24.04 on each side, identical bootstrap (`local.test_server_bootstrap`) | `aws` / `azurerm` |
 
-**El costo real de este PoC es casi enteramente del lado Azure** - la ExpressRoute Gateway (~$139/mes) no tiene equivalente pago del lado AWS: el DX Gateway y el VPN Gateway que cumplen el mismo rol de "attach point" son ambos gratis.
+The VPC and VNet come from [`aws-vpc`](https://github.com/jalcalaroot/aws-vpc) `v0.6.3` and [`azure-virtual-network`](https://github.com/jalcalaroot/azure-virtual-network) `v0.4.0`. Hosts have no public IP and no SSH/RDP exposure; access is SSM (AWS) and Run Command (Azure).
 
-**Ninguno de los dos servicios de Interconnect tiene contrato de largo plazo ni fee de cancelación** - todo es facturación por hora o gratis-en-preview, borrable en cualquier momento.
+## How the handshake works
 
-## Prerrequisitos
+The Azure side creates a `Microsoft.Network/expressRouteCircuits` resource and exports an **activation key**; the AWS side redeems it. Terraform wires them with a direct reference (`activation_key = azapi_resource.circuit.output.properties.activationKey`).
 
-- Cuenta AWS con acceso a `us-east-1` y permisos para Direct Connect/VPN Gateway/EC2/Interconnect.
-- Suscripción Azure con acceso a `eastus` y permisos para Network/Compute/ExpressRoute.
-- Una clave pública SSH para `var.azure_vm_ssh_public_key` (no se usa para acceder de verdad, Azure la exige igual para crear la VM).
-- `terraform >= 1.10`, con los providers `aws ~> 6.0`, `azurerm ~> 5.0` y `awscc ~> 1.0`.
+Details that are easy to get wrong (API `2025-09-01`):
 
-## Uso
+- `sku.tier = "MultiCloud"` (`name = "MultiCloud_MeteredData"`), not `Standard`.
+- `properties.partnerAccountId` must be the AWS account that redeems the key.
+- The key to redeem is `properties.activationKey` (base64), **not** `serviceKey` (a placeholder GUID on these circuits).
+- Bandwidth must match on both sides. 1 Gbps is the only preview size, so AWS uses `"1Gbps"`.
+- `azurerm` (5.8) does not expose the tier or those properties, hence `azapi`. `azapi` 2.13 only embeds schemas up to `2025-07-01`, so `schema_validation_enabled = false` is set on that one resource.
+
+## Routing
+
+Security groups alone are not enough on AWS:
+
+- The `compute` route table only had `0.0.0.0/0 -> NAT`; `routing.tf` adds `10.200.0.0/16 -> VGW`.
+- The `private` NACL only allowed intra-VPC traffic and no ephemeral-port egress; `routing.tf` adds ICMP/22/80/443/8080 in both directions plus the missing ephemeral egress.
+
+Azure needs nothing extra: the route table propagates BGP routes and the `VirtualNetwork` service tag covers ExpressRoute-connected networks.
+
+## Verified results
+
+| Check | Result |
+|---|---|
+| AWS connection state | `available`, 1 Gbps |
+| Azure circuit | `serviceProviderProvisioningState = Provisioned` |
+| BGP | 4 sessions `Connected` (ASN 12076); Azure learns `10.100.0.0/16` via `12076-64512` |
+| ICMP | 0 % loss, ~3-4 ms RTT |
+| `telnet <ip> 22` / `80` | connects (SSH banner / nginx `200 OK`), both directions |
+| Traceroute (Azure to AWS) | gateway `10.200.255.x`, then link-local `169.254.255.x` |
+
+## Usage
+
+Requirements: Terraform >= 1.10; AWS credentials for us-east-1; an Azure subscription for East US; providers `aws ~> 6.0`, `azurerm ~> 5.0`, `awscc ~> 1.104`, `azapi ~> 2.13`.
 
 ```hcl
-# terraform.tfvars (no versionar - ver .gitignore)
-azure_subscription_id   = "<tu subscription id>"
-azure_vm_ssh_public_key = "ssh-ed25519 AAAA..."
+# terraform.tfvars (git-ignored)
+azure_subscription_id   = "<subscription-id>"
+azure_vm_ssh_public_key = "ssh-ed25519 AAAA..."   # required by Azure, never used to log in
 ```
 
-```
-terraform init
-terraform plan   # revisar antes de aplicar - ver tabla de costos arriba
-terraform apply
+```bash
+terraform init && terraform plan && terraform apply   # the ExpressRoute gateway takes ~30 min
+terraform output aws_interconnect_connection_state
+terraform output azure_express_route_circuit_service_provider_provisioning_state
 ```
 
-Después del `apply`: `terraform output aws_interconnect_connection_state` y `terraform output azure_express_route_circuit_service_provider_provisioning_state` para confirmar que el handshake completó de ambos lados (transiciona por `requested → pending → available` en AWS, `NotProvisioned → Provisioning → Provisioned` en Azure - puede tardar). **Al 2026-09-16, este handshake no completa** - ver el aviso de estado al principio del archivo.
+Check routes: `az network vnet-gateway list-bgp-peer-status` and `list-learned-routes` on the ExpressRoute gateway.
 
-Probar conectividad real: `aws ssm start-session` / `az vm run-command invoke` para pingear y hacer `curl` en los puertos 80, 443 y 8080 entre los outputs `aws_instance_private_ip` y `azure_vm_private_ip` (`traceroute`/`mtr` también disponibles si hay que ver por dónde va la ruta).
+## Testing connectivity
+
+Hosts are private, so enter through SSM or Run Command. IPs: `terraform output aws_instance_private_ip` / `azure_vm_private_ip`.
+
+**AWS to Azure** (needs the Session Manager plugin):
+
+```bash
+aws ssm start-session --region us-east-1 --target <instance-id>
+# inside the session:
+ping -c 5 <azure-ip>
+telnet <azure-ip> 22      # SSH banner (exit: Ctrl+] then quit)
+telnet <azure-ip> 80      # type: GET / HTTP/1.0  + Enter twice -> 200 OK, hello world
+curl http://<azure-ip>    # "hello world desde Azure (<ip>)"
+```
+
+**Azure to AWS**:
+
+```bash
+az vm run-command invoke -g rg-aws-azure-interconnect-poc -n vm-aws-azure-interconnect-poc \
+  --command-id RunShellScript --query "value[0].message" -o tsv --scripts \
+  'ping -c 5 <aws-ip>; (sleep 2) | telnet <aws-ip> 22; (printf "GET / HTTP/1.0\n\n"; sleep 2) | telnet <aws-ip> 80; curl -s http://<aws-ip>'
+```
+
+| Output | Meaning |
+|---|---|
+| `Connected to <ip>` | TCP open; traffic crossed the interconnect |
+| `Connection refused` | reached the host, nothing listening |
+| `Trying...` then timeout | blocked on the path (SG, NSG, NACL or routing) |
+
+When scripting `telnet`, send the request with `\n`, not `\r\n`: the client adds an extra CR and nginx answers `400`.
+
+## Cost
+
+Approximate, `us-east-1` / `eastus`, while the stack is up:
+
+| Resource | Cost |
+|---|---|
+| ExpressRoute gateway (Standard) | $0.19/h |
+| NAT gateways (AWS + Azure) + public IPs | ~$0.10/h combined |
+| `Standard_F1als_v7` + `t3.micro` | ~$0.07/h |
+| Azure Multicloud Interconnect | free during preview |
+| AWS Interconnect | free up to 500 Mbps; **1 Gbps is $1.37/h on the AWS price list and it is unconfirmed whether the Azure preview is billed** |
+| DX Gateway, VGW | free |
+
+Roughly **$0.4/h**, or about **$1.7/h** if AWS bills the 1 Gbps. The gateway keeps billing until destroyed.
 
 ## Teardown
 
-`terraform destroy` cubre todo lo que Terraform llegó a registrar en su state. **Gotcha real, no hipotético**: si el `apply` se corta a mitad de camino (pasó el 2026-09-16 - ver `CLAUDE.md`), los recursos que se estaban creando en ese momento pueden existir de verdad en la nube sin que Terraform los haya registrado todavía - `destroy` no los toca. Verificar a mano después (`az resource list --resource-group ...`, `aws ec2 describe-vpcs ...`) en vez de asumir que quedó todo limpio solo porque `destroy` no tiró error. Ese mismo día también aparecieron: un lock de state stale (`terraform force-unlock`) y el `lifecycle.prevent_destroy` hardcodeado del módulo `azure-virtual-network` bloqueando el borrado del VNet - ambos con la solución documentada en `CLAUDE.md`.
+```bash
+terraform destroy      # the ExpressRoute gateway takes 15-45 min to delete
+```
 
-## Módulos reusados
+Then verify by hand that nothing is left (`az resource list -g rg-aws-azure-interconnect-poc`, `aws ec2 describe-vpcs`, `aws directconnect describe-direct-connect-gateways`). If an `apply` is interrupted, resources may exist in the cloud without being in state, and `destroy` will not remove them.
 
-- [`aws-vpc`](https://github.com/jalcalaroot/aws-vpc) `v0.6.3`
-- [`azure-virtual-network`](https://github.com/jalcalaroot/azure-virtual-network) `v0.4.0`
+## Known limitations
+
+- Azure Multicloud Interconnect is a **public preview**: AWS only, 1 Gbps only, no SLA, one gateway connection per interconnect, regions Australia East / East US / Germany West Central / West US.
+- The peering shows `Disabled` in the circuit JSON even with BGP sessions up.
+- Global names (storage accounts, Key Vault) in `network.tf` are overridden to avoid collisions with `azure-virtual-network` defaults.
+- `Standard_B1ls` is not deployable in some subscriptions; `Standard_F1als_v7` (NVMe, Gen2) is used instead.
+
+## References
+
+- [Azure Multicloud Interconnect overview](https://learn.microsoft.com/en-us/azure/multicloud-interconnect/overview) · [availability and limits](https://learn.microsoft.com/en-us/azure/multicloud-interconnect/availability-limits)
+- [ExpressRoute Circuits - Get (2025-09-01)](https://learn.microsoft.com/en-us/rest/api/expressroute/express-route-circuits/get?view=rest-expressroute-2025-09-01)
+- [AWS Interconnect pricing](https://docs.aws.amazon.com/interconnect/latest/userguide/interconnect-pricing.html)
+- [Building Azure Multicloud Interconnect to AWS](https://www.simonpainter.com/building-azure-multicloud-interconnect-to-aws/)
+
+See [SECURITY.md](SECURITY.md) for reporting issues and `CLAUDE.md` for the working notes and failure history.

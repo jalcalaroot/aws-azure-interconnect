@@ -2,11 +2,30 @@
 
 PoC de conectividad privada AWS ↔ Azure sobre AWS Interconnect (GA desde abril 2026, Google Cloud como partner de lanzamiento) y su contraparte Azure Multicloud Interconnect (todavía en preview). Vive en `multicloud/`, junto a `prowler-multicloud-agent`, no bajo `aws/` ni `azure/` - es intrínsecamente de las dos nubes.
 
-## PROYECTO PAUSADO (2026-09-16) - esperando acceso a la preview de Azure
+## PROYECTO FUNCIONANDO (2026-10-05) - verificado end-to-end; PoC encendida hasta que el usuario pida destruir
 
-**Estado: todo lo desplegado se destruyó. No avanzar en conectividad hasta que el usuario confirme que Microsoft aprobó el acceso a la preview.**
+**Esto reemplaza la pausa del 2026-09-16.** Todo lo de esa sesión sobre "allow-list gestionado por Microsoft / esperar aka.ms/MCIForm" resultó ser una conclusión equivocada (se conserva abajo como historial). Con la doc oficial y la spec de la API `2025-09-01` (`ExpressRouteMultiCloudCircuitGet`):
 
-**Próximo paso (bloqueante, fuera de esta sesión):** el usuario ya envió el formulario de acceso **[Multicloud Interconnect Form](https://aka.ms/MCIForm)** el 2026-09-16, pidiendo soporte/habilitación de la preview de Azure Multicloud Interconnect para AWS en la suscripción `0a314178-d091-4e21-87d5-48ff79bd7ca4` (región East US / us-east-1). **Queda esperando que Microsoft apruebe el acceso** - no hay ETA conocido, no es autoservicio. No retomar `interconnect.tf` hasta que el usuario confirme la aprobación.
+- Es una **preview pública** desde 2026-08-26, East US soportada, 1 Gbps, sin cargo de servicio ni de egress de Azure durante la preview. `aka.ms/MCIForm` es solo para pedir regiones adicionales.
+- El circuito es un `Microsoft.Network/expressRouteCircuits` con `sku.tier = "MultiCloud"` (`MultiCloud_MeteredData`), `properties.partnerAccountId` (cuenta AWS) y `properties.serviceProviderProperties.serviceProviderName = "AWS"`. La key que AWS redime es `properties.activationKey`, **no** `serviceKey` (que devolvió el placeholder `0000…`).
+- El `500Mbps` de AWS contra los `1000` de Azure tampoco coincidía; ahora ambos son 1 Gbps.
+- `azurerm` 5.8 no expone el tier ni esos campos: el circuito se creó con `azapi_resource` (`interconnect.tf`, con `schema_validation_enabled = false` porque azapi 2.13 solo embebe esquemas hasta 2025-07-01).
+
+**Resultado del `apply` real (2026-10-05, 15:55 UTC):** funcionó. AWS `available` (1Gbps), circuito Azure `Provisioned`, 4 sesiones BGP (Azure aprende `10.100.0.0/16`, AS path `12076-64512`), ping 0% pérdida (~3-4 ms), `telnet` a 22 (banner OpenSSH) y 80 (nginx, "hello world") y `curl` en ambos sentidos por IPs privadas; el traceroute desde Azure pasa por `10.200.255.x` y `169.254.255.x` (link-local del Interconnect). `activationKey` llega al terminar el PUT. Sigue sin confirmarse si AWS cobra el 1 Gbps ($1.37/h) en la preview con Azure: mirar Cost Explorer al día siguiente.
+
+**Bugs reales del primer `apply`** (los 4 pasaron `validate` y `plan`; corregidos): (1) nombres globales `stflowlogsjalcalaroot`/`stjalcalarootnet`/`kv-jalcalaroot-net` ya existen en el RG `jalcalaroot` (proyecto azure-virtual-network) - ahora `sticpocdatajalcala`/`sticpocflowjalcala`/`kv-icpoc-jalcala` en `network.tf`; (2) `data.aws_route_table.compute` se leía antes de la asociación del módulo - `depends_on = [module.aws_vpc]`; (3) `Standard_B1ls` da `SkuNotAvailable` en eastus para esta suscripción (`az vm list-skus` sin `--all` solo lista lo desplegable: no hay B x64 ni D v3/v5) - ahora `Standard_F1als_v7` + `disk_controller_type = "NVMe"`; (4) el `user_data` de la EC2 corría `apt` antes de que el NAT estuviera listo y dejó la caja sin `traceroute` - bootstrap común con reintentos (`local.test_server_bootstrap` en `compute.tf`).
+
+**Pruebas de conectividad (agregado 2026-10-05):** el ping solo no basta; ambas cajas ahora levantan **nginx en :80** (hello world: "hello world desde AWS|Azure (<ip>)"), sshd de serie en :22 y `python3 -m http.server` plano en 443/8080, con `telnet`/`traceroute` instalados. Probar con `telnet <ip> 22`, `(printf 'GET / HTTP/1.0\n\n'; sleep 2) | telnet <ip> 80` (con `\r\n` telnet manda CR extra y nginx da 400). **Ojo:** ese cambio de `user_data`/`custom_data` está en el código pero NO se aplicó a las cajas vivas (pararía la EC2 y recrearía la VM); se instaló nginx a mano en ambas para probar. El próximo `apply` desde cero lo hace nativo, sin verificar aún.
+
+**Hecho 2026-10-05:** `providers.tf` (azapi `~> 2.13`, awscc `~> 1.104`), `interconnect.tf`, `outputs.tf`; `terraform fmt` + `validate` OK (contenedor `hashicorp/terraform:1.10`, `init -backend=false`). **`.terraform.lock.hcl` está ignorado por git y es de `root` (lo creó Docker)** - hay que correr `terraform init -upgrade` para que tome azapi y awscc 1.104.
+
+**Pendiente antes del `apply`** (no aplicar sin OK explícito del usuario - el gateway ExpressRoute cuesta ~$0.19/h y tarda 30-60 min):
+1. `terraform plan` real (mismo contenedor de abajo).
+2. Verificar si `activationKey` llega al terminar el PUT o de forma asíncrona; si llega vacío, releer con un data source antes del lado awscc.
+3. Tras el `apply`: `serviceProviderProvisioningState` debe pasar a `Provisioned` y `awscc_interconnect_connection.state` a available; luego `az network vnet-gateway list-bgp-peer-status`/`list-learned-routes`, y ping/curl entre EC2 y VM.
+4. Teardown: `destroy` + verificación manual de huérfanos (ver lección del 2026-09-16 abajo).
+
+Fuente adicional: simonpainter.com/building-azure-multicloud-interconnect-to-aws (2026-09-19), que lo levantó sin allow-list y avisa que el Portal deja grisado el selector de la connection del gateway (se usa CLI/Terraform).
 
 ### Qué pasó en el primer `apply` real (2026-09-15 noche → 2026-09-16 mañana)
 
@@ -106,9 +125,9 @@ Los 4 `peeringLocations` (menos `useast2euap`, que parece un early-access intern
 
 ## Pendiente
 
-- ~~Validar si `service_provider_name = "AWS"` completa el handshake real~~ - **ya se validó, y no lo hace** (ver "PROYECTO PAUSADO" arriba). No repetir este intento sin antes tener acceso aprobado a la preview real.
-- **Bloqueante actual**: esperar que Microsoft apruebe `aka.ms/MCIForm` (enviado 2026-09-16). Sin eso, no hay forma de avanzar con el Interconnect real.
-- Cuando se apruebe el acceso: investigar el mecanismo real (probablemente una api-version más nueva de `Microsoft.Network/expressRouteCircuits`, 2026-01-01 o 2026-03-01, con el "port type" que menciona la doc - no confirmado, ver sección de investigación arriba) y recién ahí reescribir `interconnect.tf`.
+- ~~Validar si `service_provider_name = "AWS"` completa el handshake real~~ - se probó el 2026-09-16 y no lo hace; la causa era el tier/`partnerAccountId`/key equivocados, no un allow-list (ver "PROYECTO RETOMADO" arriba).
+- ~~Bloqueante: esperar aka.ms/MCIForm~~ - ya no aplica (preview pública, 2026-10-05). Lo que sigue: `plan` real y `apply` con OK explícito (ver pendientes arriba).
+- ~~Investigar el mecanismo real~~ - resuelto: api-version `2025-09-01`, tier `MultiCloud`, `partnerAccountId`, `activationKey` (implementado con `azapi` en `interconnect.tf`).
 - Cargar las variables de GitHub Actions (`AWS_ROLE_ARN_AGENT`/`_PLAN`, `ARM_CLIENT_ID_AGENT`/`_PLAN`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`, `AZURE_VM_SSH_PUBLIC_KEY`) y volver a aplicar `ci_identities.tf` limpio (falta el lado Azure) recién cuando se retome el trabajo - no antes, para no dejar el workflow de apply armado con credenciales reales mientras el proyecto está pausado.
 - Confirmar si el tier gratis de 500 Mbps del lado AWS sigue aplicando cuando el circuito de Azure se crea a 1 Gbps (única opción de `bandwidthsOffered` para este provider) - ver nota en la tabla de costos del README.
 - Decidir si esto termina viviendo solo como PoC descartable o si se documenta como arquitectura de referencia (como pasó con Container Apps y AKS/AGIC en el blog) - decisión para después de tener el Interconnect real funcionando, no antes.
