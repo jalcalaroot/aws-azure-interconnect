@@ -132,6 +132,31 @@ resource "aws_iam_instance_profile" "ssm" {
   role = aws_iam_role.ssm.name
 }
 
+# Same bootstrap on both clouds (only the label differs), so a failed
+# ping/telnet/curl is the network, never a difference between the 2 boxes.
+#  - nginx on :80 is the real "hello world" target for `telnet <ip> 80`;
+#    :22 is the stock sshd (telnet to it just returns the SSH banner);
+#    :443/:8080 stay plain python http.server (no certificate - same echo).
+#  - apt is retried: on first boot the NAT Gateway / route may not be up yet,
+#    and one failed apt-get used to leave the box with no traceroute at all
+#    (seen on the EC2 box, 2026-10-05).
+#  - Ubuntu's cloud image ships the SSM agent but not python3/iputils/telnet
+#    by default - installed explicitly rather than assumed.
+locals {
+  test_server_bootstrap = <<-EOT
+    #!/bin/bash
+    for i in $(seq 1 30); do
+      apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nginx telnet python3 iputils-ping curl net-tools dnsutils traceroute && break
+      sleep 10
+    done
+    echo "hello world desde __CLOUD__ ($(hostname -I | awk '{print $1}'))" > /var/www/html/index.html
+    systemctl enable --now nginx
+    cd /var/www/html
+    nohup python3 -m http.server 443 > /dev/null 2>&1 &
+    nohup python3 -m http.server 8080 > /dev/null 2>&1 &
+  EOT
+}
+
 resource "aws_instance" "poc" {
   #checkov:skip=CKV_AWS_126:Detailed (1-min) monitoring has a real per-instance cost (~$2.10/mo) for a throwaway PoC test box - default 5-min monitoring is free and enough to see it's alive
   ami                    = data.aws_ssm_parameter.ubuntu_ami.value
@@ -149,17 +174,7 @@ resource "aws_instance" "poc" {
     encrypted = true # AWS-managed key, no extra cost
   }
 
-  # Ubuntu's cloud image ships the SSM agent (snap) but not python3/iputils
-  # by default on the minimal server image - install explicitly rather than
-  # assume they're there.
-  user_data = <<-EOF
-    #!/bin/bash
-    apt-get update
-    apt-get install -y python3 iputils-ping curl net-tools dnsutils traceroute
-    python3 -m http.server 80 &
-    python3 -m http.server 443 &
-    python3 -m http.server 8080 &
-  EOF
+  user_data = replace(local.test_server_bootstrap, "__CLOUD__", "AWS")
 
   tags = merge(local.tags, { Name = "aws-azure-interconnect-poc" })
 }
@@ -244,7 +259,8 @@ resource "azurerm_linux_virtual_machine" "poc" {
   name                            = "vm-aws-azure-interconnect-poc"
   resource_group_name             = azurerm_resource_group.this.name
   location                        = var.azure_location
-  size                            = "Standard_B1ls" # cheapest non-retired burstable x64 size - clean per tflint's azurerm ruleset (B1s/B1ms/B2s all flagged retired-or-announced)
+  size                            = "Standard_F1als_v7" # cheapest x64 size this subscription can actually deploy in eastus ($0.0605/h, 1 vCPU/2 GB). Standard_B1ls is flagged SkuNotAvailable (Capacity Restrictions) for it - checked 2026-10-05 with `az vm list-skus -l eastus`: no x64 B-series and no v3/v5 D-series are available here, only v6/v7 and ARM
+  disk_controller_type            = "NVMe"              # v7 sizes are NVMe-only; they also require a Gen2 image (Canonical ubuntu-24_04-lts/server is Gen2)
   admin_username                  = "azureuser"
   network_interface_ids           = [azurerm_network_interface.poc_vm.id]
   disable_password_authentication = true
@@ -267,13 +283,5 @@ resource "azurerm_linux_virtual_machine" "poc" {
     version   = "latest"
   }
 
-  custom_data = base64encode(<<-EOF
-    #!/bin/bash
-    apt-get update
-    apt-get install -y python3 iputils-ping curl net-tools dnsutils traceroute
-    python3 -m http.server 80 &
-    python3 -m http.server 443 &
-    python3 -m http.server 8080 &
-  EOF
-  )
+  custom_data = base64encode(replace(local.test_server_bootstrap, "__CLOUD__", "Azure"))
 }
