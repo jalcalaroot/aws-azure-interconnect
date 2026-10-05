@@ -63,7 +63,8 @@ Azure needs nothing extra: the route table propagates BGP routes and the `Virtua
 | BGP | 4 sessions `Connected` (ASN 12076); Azure learns `10.100.0.0/16` via `12076-64512` |
 | ICMP | 0 % loss, ~3-4 ms RTT |
 | `telnet <ip> 22` / `80` | connects (SSH banner / nginx `200 OK`), both directions |
-| Traceroute (Azure to AWS) | gateway `10.200.255.x`, then link-local `169.254.255.x` |
+| Traceroute (Azure to AWS; AWS-side hops do not answer TTL) | gateway `10.200.255.x`, then link-local `169.254.255.x` |
+| Fresh bootstrap | both hosts recreated with `-replace`: cloud-init `done`, nginx active, `telnet`/`traceroute`/`nc` installed, hello world served on :80 and :443 |
 
 ## Usage
 
@@ -141,6 +142,7 @@ Then verify by hand that nothing is left (`az resource list -g rg-aws-azure-inte
 
 - Azure Multicloud Interconnect is a **public preview**: AWS only, 1 Gbps only, no SLA, one gateway connection per interconnect, regions Australia East / East US / Germany West Central / West US.
 - The peering shows `Disabled` in the circuit JSON even with BGP sessions up.
+- `aws-vpc` defines the `compute` route table with inline routes, so the standalone `aws_route` to `10.200.0.0/16` is treated as drift: each plan removes and re-creates it (a few seconds without the route). Fix: let the module accept extra routes.
 - Global names (storage accounts, Key Vault) in `network.tf` are overridden to avoid collisions with `azure-virtual-network` defaults.
 - `Standard_B1ls` is not deployable in some subscriptions; `Standard_F1als_v7` (NVMe, Gen2) is used instead.
 
