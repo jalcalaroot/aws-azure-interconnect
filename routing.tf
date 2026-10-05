@@ -34,6 +34,12 @@
 
 data "aws_route_table" "compute" {
   subnet_id = module.aws_vpc.compute_subnet_ids[0]
+
+  # compute_subnet_ids only depends on the subnet, not on its route-table
+  # association - without this the lookup ran before the association
+  # existed and failed with "no matching Route Table found" (apply of
+  # 2026-10-05).
+  depends_on = [module.aws_vpc]
 }
 
 resource "aws_route" "compute_to_azure" {
