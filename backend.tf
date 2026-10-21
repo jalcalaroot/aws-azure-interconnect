@@ -5,7 +5,9 @@
 # Terraform does not allow variables inside a `backend` block.
 terraform {
   backend "s3" {
-    bucket       = "jalcalaroot-tfstate-740104998573"
+    # bucket = "jalcalaroot-tfstate-<AWS_ACCOUNT_ID>" -> configuracion parcial, no se
+    # versiona (incluye el account ID). Local: terraform init -backend-config=backend.hcl
+    # (ver backend.hcl.example). CI: se deriva de sts get-caller-identity.
     key          = "aws-azure-interconnect/terraform.tfstate"
     region       = "us-east-1"
     encrypt      = true
