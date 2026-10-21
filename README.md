@@ -77,7 +77,8 @@ azure_vm_ssh_public_key = "ssh-ed25519 AAAA..."   # required by Azure, never use
 ```
 
 ```bash
-terraform init && terraform plan && terraform apply   # the ExpressRoute gateway takes ~30 min
+cp backend.hcl.example backend.hcl   # fill in <AWS_ACCOUNT_ID> (backend.hcl is gitignored)
+terraform init -backend-config=backend.hcl && terraform plan && terraform apply   # the ExpressRoute gateway takes ~30 min
 terraform output aws_interconnect_connection_state
 terraform output azure_express_route_circuit_service_provider_provisioning_state
 ```
