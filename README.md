@@ -154,4 +154,4 @@ Then verify by hand that nothing is left (`az resource list -g rg-aws-azure-inte
 - [AWS Interconnect pricing](https://docs.aws.amazon.com/interconnect/latest/userguide/interconnect-pricing.html)
 - [Building Azure Multicloud Interconnect to AWS](https://www.simonpainter.com/building-azure-multicloud-interconnect-to-aws/)
 
-See [SECURITY.md](SECURITY.md) for reporting issues and `CLAUDE.md` for the working notes and failure history.
+See [security policy](https://github.com/jalcalaroot/.github/blob/main/SECURITY.md) for reporting issues and `CLAUDE.md` for the working notes and failure history.
