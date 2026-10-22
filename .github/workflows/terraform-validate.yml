@@ -13,10 +13,12 @@ on:
 
 permissions:
   contents: read
-  security-events: write # upload the Checkov SARIF to the Security tab
 
 jobs:
   validate:
+    permissions:
+      contents: read
+      security-events: write # upload the Checkov SARIF to the Security tab
     name: fmt + validate
     runs-on: ubuntu-latest
 
