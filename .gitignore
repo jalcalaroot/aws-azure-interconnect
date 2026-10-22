@@ -5,3 +5,6 @@
 *.tfplan
 destroy.log
 apply.log
+
+# Backend parcial: el bucket incluye el account ID, solo local
+backend.hcl

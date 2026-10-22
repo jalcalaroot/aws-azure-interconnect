@@ -60,7 +60,11 @@ jobs:
         run: terraform fmt -check -recursive
 
       - name: Terraform init
-        run: terraform init -input=false
+        # Bucket del backend derivado de la cuenta (no versionado: incluye el account ID)
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::${ACCOUNT_ID}"
+          terraform init -input=false -backend-config="bucket=jalcalaroot-tfstate-${ACCOUNT_ID}"
 
       - name: Terraform validate
         run: terraform validate
