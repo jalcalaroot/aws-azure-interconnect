@@ -8,10 +8,7 @@ on:
       - ".github/workflows/terraform-*.yml"
 
 permissions:
-  id-token: write # required for OIDC authentication to AWS/Azure
   contents: read
-  pull-requests: write # to comment the plan on the PR
-  security-events: write # upload the Checkov SARIF to the Security tab
 
 concurrency:
   group: terraform-plan-${{ github.event.pull_request.number }}
@@ -30,6 +27,11 @@ env:
 
 jobs:
   plan:
+    permissions:
+      contents: read
+      id-token: write # required for OIDC authentication to AWS/Azure
+      pull-requests: write # to comment the plan on the PR
+      security-events: write # upload the Checkov SARIF to the Security tab
     name: Plan
     runs-on: ubuntu-latest
 
